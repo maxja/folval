@@ -22,3 +22,8 @@ re/ghidra/*.rep/
 
 # Editor/OS
 .DS_Store
+
+# Lab run logs (dir kept via .gitkeep; contents stay local)
+logs/*
+!logs/.gitkeep
+output-*.log
