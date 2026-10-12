@@ -23,6 +23,7 @@ Vagrant.configure("2") do |config|
     lv.memory = 8192
     lv.cpus = 4
     lv.title = "folval-win"
+    lv.vnc_enabled = true
 
     # The default libvirt management network is NAT'd to the internet.
     # Attaching it would silently defeat guest isolation — never enable.

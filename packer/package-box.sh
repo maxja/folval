@@ -18,9 +18,13 @@ cp "$DISK" output/pkg/box.img
 # metadata.json declares format AND virtual_size (GiB) - "No image format
 # specified for box." / "No image virtual size specified for box.".
 # Derive both from the artifact itself instead of hardcoding.
-VSIZE_BYTES="$(qemu-img info --output=json "$DISK" | sed -n 's/.*"virtual-size": \([0-9]*\).*/\1/p')"
-[[ -n "$VSIZE_BYTES" ]] || { echo "ERROR: could not read virtual size of $DISK." >&2; exit 1; }
-VSIZE_GIB="$(( VSIZE_BYTES / 1024 / 1024 / 1024 ))"
+# grep -oP + head -1: extract exactly the digits after the key, first match
+# only (a multi-line capture here previously broke the arithmetic below).
+VSIZE_BYTES=$(qemu-img info --output=json "$DISK" | grep -oP '"virtual-size"\s*:\s*\K[0-9]+' | head -n1)
+[[ "$VSIZE_BYTES" =~ ^[0-9]+$ ]] || { echo "ERROR: could not read virtual size of $DISK." >&2; exit 1; }
+# awk for the division: bash arithmetic chokes on values it can't parse as a
+# single token (see the 2026-10-12 "arithmetic syntax error" incident).
+VSIZE_GIB=$(awk -v b="$VSIZE_BYTES" 'BEGIN {print int(b / 1024 / 1024 / 1024)}')
 printf '{"provider":"libvirt","format":"qcow2","virtual_size": %s}\n' "$VSIZE_GIB" > output/pkg/metadata.json
 tar -czf "$BOX" -C output/pkg metadata.json box.img
 rm -rf output/pkg

@@ -14,15 +14,32 @@
 #   (re)build needs a 1Password approval popup for the license key read.
 #   The .box contains the keyed Windows image: it is gitignored and must
 #   never leave this machine.
+#
+# Build logging:
+#   Every `./lab.sh build` run writes a timestamped log to output-build.log
+#   (fresh file per run; lines prefixed [YYYY-MM-DD HH:MM:SS]).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 BOX_NAME="folval/win10-ltsc-2021"
 BOX_FILE="packer/output/folval-win10-ltsc-2021.box"
+BUILD_LOG="output-build.log"
+
+# Run a command, prefixing every output line with a timestamp and appending
+# to $BUILD_LOG. Returns the command's own exit status (pipefail propagates
+# packer's failure even though tee/while succeed).
+ts_run() {
+  local rc=0
+  "$@" 2>&1 | while IFS= read -r line; do
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$line" | tee -a "$BUILD_LOG"
+  done || rc=$?
+  return $rc
+}
 
 case "${1:-}" in
   build)
-    ( cd packer && ./build.sh build )
+    echo "==== folval build started $(date '+%Y-%m-%d %H:%M:%S') on $(hostname) ====" > "$BUILD_LOG"
+    ts_run bash packer/build.sh build
     ;;
   add)
     if [ ! -f "$BOX_FILE" ]; then
@@ -46,6 +63,10 @@ case "${1:-}" in
     fi
     ;;
   rebuild)
+    if [ "${2:-}" = "--force" ]; then
+      echo "== Cleaning up old assets (FORCE mode) =="
+      rm -rf packer/output-win-ltsc
+    fi
     bash "$0" build
     bash "$0" add
     bash "$0" up
