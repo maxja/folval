@@ -143,7 +143,7 @@ folly-n-valor/
 │   └── ghidra/              # host-side Ghidra projects + shared artifacts
 ├── captures/pcap/           # bridge captures
 ├── logs/                    # lab.sh run logs (build.log, up.log) — contents local-only
-└── .ai-memory/              # misconceptions.md, handoff.md
+└── .ai-memory/              # misconceptions.md (tracked); handoff.md local-only (gitignored)
 ```
 
 Dirs are created lazily when their phase's first artifact lands (decided 2026-10-12); `logs/` is the exception — created upfront because `lab.sh` writes there daily (structure preserved via `.gitkeep`, contents gitignored).

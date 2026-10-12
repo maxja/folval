@@ -27,3 +27,6 @@ re/ghidra/*.rep/
 logs/*
 !logs/.gitkeep
 output-*.log
+
+# Agent session handoff — transient, rewritten every session
+.ai-memory/handoff.md
