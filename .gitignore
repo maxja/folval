@@ -1,0 +1,24 @@
+# Vagrant
+.vagrant/
+*.box
+
+# Packer
+packer/isos/
+packer/dl/
+packer/output*/
+packer_cache/
+
+# Secrets — never commit
+packer/vars/*.pkvars.hcl
+*.pkvars.hcl
+
+# Captures (large binaries)
+captures/pcap/*.pcap
+captures/pcap/*.pcapng
+
+# Ghidra projects
+re/ghidra/*.gpr
+re/ghidra/*.rep/
+
+# Editor/OS
+.DS_Store

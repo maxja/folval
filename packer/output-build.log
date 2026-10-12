@@ -1,0 +1,14 @@
+Warning: A checksum of 'none' was specified. Since ISO files are so big,
+a checksum is highly recommended.
+
+  on windows-ltsc.pkr.hcl line 21:
+  (source code not available)
+
+Error: 1 error(s) occurred:
+
+* Bad Floppy disk file 'answer/Autounattend.xml': stat answer/Autounattend.xml: no such file or directory
+
+  on windows-ltsc.pkr.hcl line 21:
+  (source code not available)
+
+
