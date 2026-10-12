@@ -18,12 +18,14 @@ cp "$DISK" output/pkg/box.img
 # metadata.json declares format AND virtual_size (GiB) - "No image format
 # specified for box." / "No image virtual size specified for box.".
 # Derive both from the artifact itself instead of hardcoding.
-# grep -oP + head -1: extract exactly the digits after the key, first match
-# only (a multi-line capture here previously broke the arithmetic below).
-VSIZE_BYTES=$(qemu-img info --output=json "$DISK" | grep -oP '"virtual-size"\s*:\s*\K[0-9]+' | head -n1)
+# NB: parse the JSON properly. QEMU >= 9 (?) "children" blocks each carry
+# their own "virtual-size" (the file child's = on-disk size, NOT the disk's
+# virtual size) BEFORE the top-level key — a grep | head -n1 grabbed the
+# child value and declared virtual_size: 10 for a 60 GiB image, making
+# vagrant-libvirt create a 10G domain volume under a 60 GiB Windows install
+# (see misconceptions log 2026-10-12).
+VSIZE_BYTES=$(qemu-img info --output=json "$DISK" | python3 -c 'import json,sys; print(json.load(sys.stdin)["virtual-size"])')
 [[ "$VSIZE_BYTES" =~ ^[0-9]+$ ]] || { echo "ERROR: could not read virtual size of $DISK." >&2; exit 1; }
-# awk for the division: bash arithmetic chokes on values it can't parse as a
-# single token (see the 2026-10-12 "arithmetic syntax error" incident).
 VSIZE_GIB=$(awk -v b="$VSIZE_BYTES" 'BEGIN {print int(b / 1024 / 1024 / 1024)}')
 printf '{"provider":"libvirt","format":"qcow2","virtual_size": %s}\n' "$VSIZE_GIB" > output/pkg/metadata.json
 tar -czf "$BOX" -C output/pkg metadata.json box.img

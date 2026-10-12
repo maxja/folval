@@ -16,22 +16,23 @@
 #   never leave this machine.
 #
 # Build logging:
-#   Every `./lab.sh build` run writes a timestamped log to output-build.log
+#   Every `./lab.sh build` run writes a timestamped log to logs/build.log
 #   (fresh file per run; lines prefixed [YYYY-MM-DD HH:MM:SS]).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 BOX_NAME="folval/win10-ltsc-2021"
 BOX_FILE="packer/output/folval-win10-ltsc-2021.box"
-BUILD_LOG="output-build.log"
+BUILD_LOG="logs/build.log"
 
 # Run a command, prefixing every output line with a timestamp and appending
 # to $BUILD_LOG. Returns the command's own exit status (pipefail propagates
 # packer's failure even though tee/while succeed).
 ts_run() {
-  local rc=0
+  local rc=0 log="$1"
+  shift
   "$@" 2>&1 | while IFS= read -r line; do
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$line" | tee -a "$BUILD_LOG"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$line" | tee -a "$log"
   done || rc=$?
   return $rc
 }
@@ -39,7 +40,7 @@ ts_run() {
 case "${1:-}" in
   build)
     echo "==== folval build started $(date '+%Y-%m-%d %H:%M:%S') on $(hostname) ====" > "$BUILD_LOG"
-    ts_run bash packer/build.sh build
+    ts_run "$BUILD_LOG" bash packer/build.sh build
     ;;
   add)
     if [ ! -f "$BOX_FILE" ]; then
@@ -49,11 +50,12 @@ case "${1:-}" in
     vagrant box add --force "$BOX_NAME" "$BOX_FILE"
     ;;
   up)
-    vagrant up
+    echo "==== folval up started $(date '+%Y-%m-%d %H:%M:%S') on $(hostname) ====" > logs/up.log
+    ts_run logs/up.log vagrant up
     ;;
   verify)
     echo "== libvirt domains =="
-    virsh -c qemu+unix:///system list --all | grep -E "Name|folval" || true
+    virsh -c qemu+unix:///system list --all | grep -E "Name|folly" || true
     echo "== WinRM round-trip =="
     if vagrant winrm -c "echo ok"; then
       echo "GATE: Phase 1 verification PASSED"
@@ -73,7 +75,9 @@ case "${1:-}" in
     bash "$0" verify
     ;;
   license)
-    vagrant winrm -c "cscript //nologo %windir%\system32\slmgr.vbs /dli"
+    # NB: vagrant winrm -c runs via PowerShell — %windir% is NOT expanded
+    # there (it arrived as a literal Documents-relative path once).
+    vagrant winrm -c "cscript //nologo C:\\Windows\\System32\\slmgr.vbs /dli"
     ;;
   down)
     vagrant halt
