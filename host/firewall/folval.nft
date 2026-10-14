@@ -32,6 +32,11 @@ table inet folval {
 	}
 
 	chain folval_from_guest {
+		# Replies to host-initiated connections (WinRM from the host to the
+		# guest): the SYN-ACK is established traffic and must not hit the
+		# default drop below, or host->guest management can never complete.
+		ct state established,related accept comment "replies to host-initiated flows"
+
 		# Post-DNAT ports (prerouting runs before input).
 		ip daddr $GW_IP udp dport 1053 accept comment "DNS (guest saw :53)"
 		ip daddr $GW_IP tcp dport 1053 accept comment "DNS/TCP (guest saw :53)"
