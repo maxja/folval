@@ -1,0 +1,49 @@
+#!/usr/sbin/nft -f
+# folval — Phase 2 isolation ruleset.
+# Sole egress boundary for the RE guest (D6): guest may reach ONLY the
+# gateway services below on 192.168.100.1; everything else from the guest
+# net is dropped; nothing routes in or out of the bridge.
+#
+# Privileged-port design (Option A): folval-gw listens unprivileged
+# (1053/8080); prerouting DNATs the standard ports so the guest sees
+# 53/80. Port 443 is deliberately NOT whitelisted (D3 — first hermetic
+# pcap maps HTTPS endpoints before any TLS-termination decision).
+#
+# Idempotency: apply.sh deletes the table before loading this file.
+
+define BR_IF     = "virbr1"
+define GW_IP     = 192.168.100.1
+define GUEST_NET = 192.168.100.0/24
+
+table inet folval {
+	# Rewrite standard ports to the unprivileged gateway ports.
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		iifname $BR_IF ip daddr $GW_IP udp dport 53 dnat to $GW_IP:1053
+		iifname $BR_IF ip daddr $GW_IP tcp dport 53 dnat to $GW_IP:1053
+		iifname $BR_IF ip daddr $GW_IP tcp dport 80 dnat to $GW_IP:8080
+	}
+
+	# Everything arriving FROM the guest net gets the folval policy.
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iifname $BR_IF ip saddr $GUEST_NET jump folval_from_guest
+		iifname $BR_IF counter drop comment "non-guest-net traffic on the bridge: drop"
+	}
+
+	chain folval_from_guest {
+		# Post-DNAT ports (prerouting runs before input).
+		ip daddr $GW_IP udp dport 1053 accept comment "DNS (guest saw :53)"
+		ip daddr $GW_IP tcp dport 1053 accept comment "DNS/TCP (guest saw :53)"
+		ip daddr $GW_IP tcp dport 8080 accept comment "HTTP (guest saw :80)"
+		ip daddr $GW_IP icmp type echo-request accept comment "gate: ping GW"
+		counter drop comment "folval: default drop from guest net"
+	}
+
+	# No transit through the host in either direction.
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		iifname $BR_IF counter drop comment "no routing from guest"
+		oifname $BR_IF counter drop comment "no routing to guest"
+	}
+}

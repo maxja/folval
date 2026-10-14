@@ -1,0 +1,14 @@
+[Unit]
+Description=folval Phase 2 nftables isolation boundary (re-isolated-net)
+Wants=libvirtd.service
+After=libvirtd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /opt/folval/host/firewall/folval.nft
+ExecStartPre=/usr/sbin/nft delete table inet folval
+ExecStop=/usr/sbin/nft delete table inet folval
+
+[Install]
+WantedBy=multi-user.target

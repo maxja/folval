@@ -1,0 +1,12 @@
+[Unit]
+Description=folval pcap capture on re-isolated-net bridge (virbr1)
+After=libvirtd.service folval-firewall.service
+Wants=folval-firewall.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/tcpdump -i virbr1 -s 0 -U -W 20 -C 50 -w /opt/folval/captures/pcap/folval.pcap
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
