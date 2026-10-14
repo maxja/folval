@@ -12,6 +12,11 @@ packer_cache/
 packer/vars/*.pkvars.hcl
 *.pkvars.hcl
 
+# Go build artifacts
+server/folval-gw
+server/cmd/folval-gw/folval-gw
+*.test
+
 # Captures (large binaries)
 captures/pcap/*.pcap
 captures/pcap/*.pcapng
