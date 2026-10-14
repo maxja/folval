@@ -4,7 +4,12 @@
 // query and request leaves one JSONL line.
 package evidence
 
-import "io"
+import (
+	"encoding/json"
+	"io"
+	"sync"
+	"time"
+)
 
 // Event is one JSONL log line.
 type Event struct {
@@ -18,15 +23,29 @@ type Event struct {
 
 // Logger serializes Events to a single writer (JSONL file or stderr).
 type Logger struct {
-	w io.Writer
+	w  io.Writer
+	mu sync.Mutex
 }
 
 // NewLogger wraps a writer.
 func NewLogger(w io.Writer) *Logger {
-	panic("phase2: not implemented")
+	return &Logger{w: w}
 }
 
-// Event emits one event with a fresh timestamp.
+// Event emits one event with a fresh timestamp. Safe for concurrent use.
 func (l *Logger) Event(proto, src, typ, name, detail string) {
-	panic("phase2: not implemented")
+	b, err := json.Marshal(Event{
+		TS:     time.Now().UTC().Format(time.RFC3339Nano),
+		Proto:  proto,
+		Src:    src,
+		Type:   typ,
+		Name:   name,
+		Detail: detail,
+	})
+	if err != nil {
+		return // Event is plain strings; marshaling cannot fail in practice
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.w.Write(append(b, '\n'))
 }
