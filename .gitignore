@@ -19,6 +19,7 @@ server/cmd/folval-gw/folval-gw
 
 # Captures (large binaries)
 captures/pcap/*.pcap
+captures/pcap/*.pcap[0-9]*
 captures/pcap/*.pcapng
 
 # Ghidra projects
