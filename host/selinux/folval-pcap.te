@@ -1,0 +1,35 @@
+# folval-pcap: allow tcpdump (netutils_t) to write its pcap ring files
+# into the project-local captures/pcap/ directory (labeled user_home_t).
+#
+# Context: folval-capture.service runs /usr/sbin/tcpdump -w into the repo
+# checkout per the "evidence stays project-local" requirement. The default
+# policy only grants netutils_t read/search on user home dirs, so every
+# savefile open fails with EACCES ("Permission denied") even as root.
+#
+# Scope note: SELinux AVCs carry types, not paths, so this allows netutils_t
+# to create/write files labeled user_home_t anywhere under /home. Accepted
+# trade-off for a dedicated RE lab host; do NOT reuse on multi-user machines.
+#
+# Build & install:
+#   checkmodule -M -m -o folval-pcap.mod host/selinux/folval-pcap.te
+#   semodule_package -o folval-pcap.pp -m folval-pcap.mod
+#   sudo semodule -i folval-pcap.pp
+#   sudo semodule -B   # restore dontaudit after any -DB debugging
+
+module folval-pcap 1.1;
+
+require {
+	type netutils_t;
+	type user_home_t;
+	class dir { search write add_name remove_name };
+	class file { create open write setattr getattr rename unlink append };
+	class capability { dac_override dac_read_search chown setuid setgid };
+}
+
+allow netutils_t user_home_t:dir { search write add_name remove_name };
+allow netutils_t user_home_t:file { create open write setattr getattr rename unlink append };
+
+# The capture dir is owned by the login user; tcpdump runs as root (-Z root)
+# but netutils_t must be allowed to actually exercise the DAC-bypass and
+# uid/gid-drop capabilities that implies (AVC: "denied { dac_override }").
+allow netutils_t self:capability { dac_override dac_read_search chown setuid setgid };

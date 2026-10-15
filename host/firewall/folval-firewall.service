@@ -6,8 +6,16 @@ After=libvirtd.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/nft -f /opt/folval/host/firewall/folval.nft
-ExecStartPre=/usr/sbin/nft delete table inet folval
+# The ruleset source of truth is host/firewall/folval.nft in the repo. The
+# service itself reads a copy installed to /etc/folval/ — a systemd unit
+# (SELinux init_t, no transition) reading a file under /home gets silently
+# AVC-denied on enforcing hosts, so /home paths must NOT appear here.
+# Install/refresh (from the repo root):
+#   sudo install -D -m 644 host/firewall/folval.nft /etc/folval/folval.nft
+#   sudo cp host/firewall/folval-firewall.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now folval-firewall.service
+ExecStartPre=-/usr/sbin/nft delete table inet folval
+ExecStart=/usr/sbin/nft -f /etc/folval/folval.nft
 ExecStop=/usr/sbin/nft delete table inet folval
 
 [Install]
