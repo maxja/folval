@@ -45,6 +45,11 @@ Vagrant.configure("2") do |config|
     lv.qemu_use_agent = true
   end
 
+  # Phase 3 provisioning does NOT use a vagrant shell provisioner: uploads
+  # go through winrm-fs, which is a stub gem on this host (see misconceptions).
+  # `./lab.sh provision` delivers vm/debloat.ps1 via qemu-ga guest-exec
+  # (PowerShell -EncodedCommand) instead.
+
   # Isolated lab network: no DHCP, no forwarding/NAT, host side is 192.168.100.1.
   config.vm.network "private_network",
     ip: "192.168.100.10",
