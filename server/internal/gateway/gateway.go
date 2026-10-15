@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/maxja/folval/server/internal/config"
@@ -197,13 +198,51 @@ func serveDNSOverTCP(conn net.Conn, sinkhole net.IP, ov map[string]net.IP, lg *e
 	}
 }
 
+// ncsiBody is the exact page body Windows NCSI expects (a byte-different
+// body makes Windows report "no internet", which changes client behavior —
+// the lab must look online to the guest).
+const ncsiBody = "Microsoft Connect Test"
+
+// ncsiResponse returns the canned NCSI reply for host/path, or ok=false if
+// the request is not an NCSI probe. Windows probes two endpoints:
+//
+//	/connecttest.txt -> 200 with the fixed body above
+//	/redirect       -> 302 redirecting to itself (probe follows it and
+//	                   expects the same redirect again)
+//
+// Matching is on Host (port stripped) + path; both the IPv4 and IPv6 probe
+// hostnames are covered.
+func ncsiResponse(host, path string) (status int, location, body string, ok bool) {
+	host = strings.Split(host, ":")[0]
+	if host != "www.msftconnecttest.com" && host != "ipv6.msftconnecttest.com" {
+		return 0, "", "", false
+	}
+	switch path {
+	case "/connecttest.txt":
+		return http.StatusOK, "", ncsiBody, true
+	case "/redirect":
+		return http.StatusFound, "http://" + host + "/redirect", "", true
+	}
+	return 0, "", "", false
+}
+
 // HTTPHandler returns the echo/logger handler: every request is logged
 // (method, Host, path) and answered 200 with a body that self-identifies
 // as folval-gw so accidental client hits are self-evidencing in guest-side
-// logs too.
+// logs too. NCSI probes are the one built-in exception: they get the
+// genuine Microsoft responses so Windows reports "Internet access".
 func HTTPHandler(lg *evidence.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := r.Host + r.URL.Path
+		if status, location, body, ok := ncsiResponse(r.Host, r.URL.Path); ok {
+			lg.Event("http", r.RemoteAddr, "http.request", name, r.Method+" ncsi")
+			if location != "" {
+				w.Header().Set("Location", location)
+			}
+			w.WriteHeader(status)
+			fmt.Fprint(w, body)
+			return
+		}
 		lg.Event("http", r.RemoteAddr, "http.request", name, r.Method)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintf(w, "folval-gw mock gateway\nMethod: %s\nURL: %s\nHost: %s\n", r.Method, r.URL.Path, r.Host)

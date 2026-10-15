@@ -148,3 +148,40 @@ func TestHTTPHandlerEchoes(t *testing.T) {
 		t.Errorf("missing evidence line: %q", logLine)
 	}
 }
+
+func TestNCSIResponses(t *testing.T) {
+	// Direct unit checks of the override table.
+	if s, loc, body, ok := ncsiResponse("www.msftconnecttest.com", "/connecttest.txt"); !ok || s != 200 || body != "Microsoft Connect Test" || loc != "" {
+		t.Errorf("connecttest.txt: %d %q %q ok=%v", s, loc, body, ok)
+	}
+	// Port-suffixed Host must still match.
+	if s, _, _, ok := ncsiResponse("www.msftconnecttest.com:80", "/connecttest.txt"); !ok || s != 200 {
+		t.Errorf("port-suffixed host: %d ok=%v", s, ok)
+	}
+	if s, loc, _, ok := ncsiResponse("ipv6.msftconnecttest.com", "/redirect"); !ok || s != 302 || loc != "http://ipv6.msftconnecttest.com/redirect" {
+		t.Errorf("redirect: %d %q ok=%v", s, loc, ok)
+	}
+	if _, _, _, ok := ncsiResponse("www.msftconnecttest.com", "/other.txt"); ok {
+		t.Errorf("unknown path on NCSI host must fall through to echo")
+	}
+	if _, _, _, ok := ncsiResponse("evil.example", "/connecttest.txt"); ok {
+		t.Errorf("non-NCSI host must not get NCSI responses")
+	}
+}
+
+func TestHTTPHandlerNCSIOverTheWire(t *testing.T) {
+	h := HTTPHandler(testLogger())
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/connecttest.txt", nil)
+	req.Host = "www.msftconnecttest.com"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || string(body) != "Microsoft Connect Test" {
+		t.Errorf("NCSI probe not answered genuinely: %d %q", resp.StatusCode, body)
+	}
+}
