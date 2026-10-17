@@ -63,6 +63,7 @@
 - **PowerShell 5.1 Get-ChildItem -Include** only works as expected with -Recurse (or with a wildcard path); plain `-Include` on a literal dir returns nothing. *(Logged: 2026-10-17)*
 - **tcpdump `-n` still prints service NAMES for well-known ports in text output** (443 → `.https`, 80 → `.http`): a numeric-only grep aggregation (`'> [0-9.]+\.[0-9]+:'`) silently dropped every 443 flow during port profiling and briefly under-reported the title's footprint to just the one custom high port. Aggregate with `-nn`, or match service names too. *(Logged: D3 wire profiling, 2026-10-17)*
 - **pcap coverage = ring/service start time vs event time:** an event earlier than capture (re)start is legitimately absent from the ring; compare timestamps before concluding "not captured" (and before claiming something IS captured — the ring's first packet bounds coverage from below). *(Logged: D3 wire profiling, 2026-10-17)*
+- **Correlate connection attempts against a FULL census of the window, not the expected-hostname set:** the custom-port SYN chains had no precursor in a grep scoped to the two known title hostnames, so they were mis-attributed to one of them via assumed cycle order — the real precursor was a third, publisher-owned hostname outside the grep set (sub-millisecond DNS→SYN, twice). A scoped grep answers only the scoped question: "no precursor found" means "none in the set searched". Re-census whenever the observation window grows. *(Logged: D3 wire profiling correction, 2026-10-17)*
 
 ## Verified Command Patterns
 
