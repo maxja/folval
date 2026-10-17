@@ -23,6 +23,11 @@
 #   ./lab.sh gateway:status      Is folval-gw running?
 #   ./lab.sh gateway:stop        Stop the background folval-gw
 #
+# Tools (host-side, D5 acquisition):
+#   ./lab.sh tools:steamcmd [--force]  Install steamcmd into host/steamcmd/
+#                                      (gitignored; first run self-updates and
+#                                      needs host internet)
+#
 #   (re)build needs a 1Password approval popup for the license key read.
 #   The .box contains the keyed Windows image: it is gitignored and must
 #   never leave this machine.
@@ -38,6 +43,11 @@ VIRSH="virsh -c qemu:///system"
 GW_BIN="server/folval-gw"
 GW_PID="logs/folval-gw.pid"
 GW_OUT="logs/gateway.jsonl"
+
+STEAMCMD_DIR="host/steamcmd"
+STEAMCMD_URL="https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz"
+# Local baseline (verified 2026-10-16); Valve publishes no official checksum.
+STEAMCMD_SHA256="cebf0046bfd08cf45da6bc094ae47aa39ebf4155e5ede41373b579b8f1071e7c"
 
 # Run a command, prefixing every output line with a timestamp and appending
 # to $BUILD_LOG. Returns the command's own exit status (pipefail propagates
@@ -178,8 +188,36 @@ case "${1:-}" in
       rm -f "$GW_PID"
     fi
     ;;
+  tools:steamcmd)
+    force="${2:-}"
+    if [ -x "$STEAMCMD_DIR/linux32/steamcmd" ] && [ "$force" != "--force" ]; then
+      echo "steamcmd: already installed at $STEAMCMD_DIR (pass --force to reinstall)"
+      exit 0
+    fi
+    if [ "$force" = "--force" ]; then
+      rm -rf "$STEAMCMD_DIR"
+    fi
+    mkdir -p "$STEAMCMD_DIR"
+    tgz="$STEAMCMD_DIR/.steamcmd_linux.tar.gz"
+    echo "== downloading steamcmd ($STEAMCMD_URL) =="
+    if command -v aria2c >/dev/null 2>&1; then
+      aria2c -x 16 -s 16 --allow-overwrite=true -d "$STEAMCMD_DIR" -o .steamcmd_linux.tar.gz "$STEAMCMD_URL"
+    else
+      curl -fsSL --retry 3 -o "$tgz" "$STEAMCMD_URL"
+    fi
+    actual=$(sha256sum "$tgz" | cut -d' ' -f1)
+    if [ "$actual" != "$STEAMCMD_SHA256" ]; then
+      echo "steamcmd: SHA-256 mismatch: got $actual, want $STEAMCMD_SHA256 — not installing" >&2
+      exit 1
+    fi
+    echo "== extracting to $STEAMCMD_DIR =="
+    tar xzf "$tgz" -C "$STEAMCMD_DIR"
+    rm -f "$tgz"
+    echo "steamcmd: installed at $STEAMCMD_DIR/steamcmd.sh"
+    echo "Next: $STEAMCMD_DIR/steamcmd.sh +login <account> +app_update <appid> validate +quit"
+    ;;
   *)
-    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

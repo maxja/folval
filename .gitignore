@@ -34,5 +34,8 @@ logs/*
 !logs/.gitkeep
 output-*.log
 
+# Host-side steamcmd install (D5 acquisition) — downloaded artifact, never committed
+host/steamcmd/
+
 # Agent session handoff — transient, rewritten every session
 .ai-memory/handoff.md
