@@ -16,16 +16,25 @@
 #   sudo semodule -i folval-pcap.pp
 #   sudo semodule -B   # restore dontaudit after any -DB debugging
 
-module folval-pcap 1.1;
+module folval-pcap 1.2;
 
 require {
 	type netutils_t;
 	type user_home_t;
+	type user_home_dir_t;
+	type home_root_t;
 	class dir { search write add_name remove_name };
 	class file { create open write setattr getattr rename unlink append };
 	class capability { dac_override dac_read_search chown setuid setgid };
 }
 
+# Path walk: /home is home_root_t and /home/<user> is user_home_dir_t —
+# BOTH are distinct types from user_home_t (everything deeper). Without
+# search on them the savefile open fails EACCES at path resolution, and the
+# base policy dontaudits the denial, so it never shows in the logs (cost a
+# full blind debugging round 2026-10-17: crash-loop with zero AVCs).
+allow netutils_t home_root_t:dir search;
+allow netutils_t user_home_dir_t:dir search;
 allow netutils_t user_home_t:dir { search write add_name remove_name };
 allow netutils_t user_home_t:file { create open write setattr getattr rename unlink append };
 
