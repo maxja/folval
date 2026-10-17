@@ -43,3 +43,8 @@ host/steamcmd/
 # Gateway /push/ staging dir (D5 guest-bound files) — local only
 host/push/*
 !host/push/.gitkeep
+
+# Host-side Frida client venv (Phase 4a) — pinned: frida-tools==14.11.0 + frida==17.24.1
+host/frida-venv/
+
+tmp/
