@@ -2,6 +2,9 @@
 Description=folval pcap capture on re-isolated-net bridge (virbr1)
 After=libvirtd.service folval-firewall.service
 Wants=folval-firewall.service
+# Retry indefinitely (default start limit gives up after 5 fast retries —
+# observed after host reboot 2026-10-17 when virbr1 did not exist yet).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -17,8 +20,14 @@ EnvironmentFile=/etc/sysconfig/folval-capture
 # tcpdump), which cannot create files in the project-local captures dir —
 # hence -Z root. Do NOT add SELinuxContext= here: both unconfined_u/system_u
 # variants fail at exec with 203/EXEC Permission denied.
+# Boot-race guard: libvirt activates re-isolated-net (creates virbr1) some
+# time after libvirtd reports started; without this wait tcpdump starts too
+# early, fails with "No such device", and hits the start limit (observed
+# after host reboot 2026-10-17).
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -e /sys/class/net/virbr1 ] && [ "$i" -lt 120 ]; do sleep 1; i=$((i+1)); done; test -e /sys/class/net/virbr1'
 ExecStart=/usr/sbin/tcpdump -i virbr1 -n -s 0 -U -W 20 -C 50 -Z root -w ${FOLVAL_CAPTURE_DIR}/folval.pcap
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
