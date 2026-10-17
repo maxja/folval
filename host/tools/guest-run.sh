@@ -1,6 +1,15 @@
 #!/bin/bash
 # folval — run a PowerShell script in the guest via qemu-ga (same delivery
 # as vm:provision). Usage: bash host/tools/guest-run.sh <script.ps1>
+#
+# WARNING: scripts MUST set "$ProgressPreference = 'SilentlyContinue'" before
+# any Invoke-WebRequest/copy loops. PowerShell renders progress bars to
+# stdout when captured; qemu-ga returns them as guest-exec-status out-data
+# and a single >10 MB status response exceeds virsh's read buffer
+# (EOVERFLOW "No complete agent response found") — after which the agent
+# channel deadlocks permanently (qemu-ga keeps offering the response
+# libvirt refuses to read). Recovery: virsh destroy + start (ACPI reboot is
+# swallowed; observed 2026-10-17 — the guest itself keeps running fine).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
