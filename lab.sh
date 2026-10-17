@@ -35,7 +35,11 @@
 #   ./lab.sh steam:download [appid]  +app_update <appid> validate — download or
 #                                    re-verify the title; appid from the argument
 #                                    or STEAM_APP_ID in host/steamcmd/steam.env
-#                                    (gitignored; also holds STEAM_USER)
+#                                    (gitignored; holds STEAM_USER and/or
+#                                    op:// refs STEAM_USER_FILE / STEAM_PASS_FILE,
+#                                    resolved via the 1Password CLI — needs an
+#                                    active op session, as in the (re)build flow;
+#                                    2FA/Steam Guard codes are still typed)
 #
 #   (re)build needs a 1Password approval popup for the license key read.
 #   The .box contains the keyed Windows image: it is gitignored and must
@@ -83,6 +87,24 @@ require_steamcmd() {
 load_steam_env() {
   if [ -f "$STEAM_ENV" ]; then
     . "$STEAM_ENV"
+  fi
+}
+
+# Resolve Steam auth from op:// references in the env file (D4 pattern: only
+# the non-secret reference is stored; the value is fetched at run time).
+# Needs an active 1Password session, same as the (re)build license flow.
+resolve_steam_auth() {
+  if [ -n "${STEAM_USER_FILE:-}" ]; then
+    STEAM_USER=$(op read "$STEAM_USER_FILE") || {
+      echo "op read failed for STEAM_USER_FILE — check your 1Password session ('op account list')" >&2
+      exit 1
+    }
+  fi
+  if [ -n "${STEAM_PASS_FILE:-}" ]; then
+    STEAM_PASS=$(op read "$STEAM_PASS_FILE") || {
+      echo "op read failed for STEAM_PASS_FILE — check your 1Password session ('op account list')" >&2
+      exit 1
+    }
   fi
 }
 
@@ -244,7 +266,12 @@ case "${1:-}" in
   steam:login)
     require_steamcmd
     load_steam_env
-    if [ -n "${STEAM_USER:-}" ]; then
+    resolve_steam_auth
+    if [ -n "${STEAM_USER:-}" ] && [ -n "${STEAM_PASS:-}" ]; then
+      echo "== steamcmd login (account + password resolved from 1Password via $STEAM_ENV) =="
+      echo "== if Steam asks for a 2FA / Steam Guard code, type it at the prompt =="
+      exec "$STEAMCMD_DIR/steamcmd.sh" "+login" "$STEAM_USER" "$STEAM_PASS"
+    elif [ -n "${STEAM_USER:-}" ]; then
       echo "== steamcmd login (account pre-filled from $STEAM_ENV) =="
       echo "== type the password (and any 2FA code) when prompted; session caches in ~/.local/share/Steam =="
       exec "$STEAMCMD_DIR/steamcmd.sh" "+login" "$STEAM_USER"
@@ -256,13 +283,21 @@ case "${1:-}" in
   steam:download)
     require_steamcmd
     load_steam_env
+    resolve_steam_auth
     appid="${2:-${STEAM_APP_ID:-}}"
     if [ -z "$appid" ]; then
       echo "usage: ./lab.sh steam:download <appid>" >&2
       echo "       (or set STEAM_APP_ID in $STEAM_ENV)" >&2
       exit 1
     fi
-    if [ -n "${STEAM_USER:-}" ]; then
+    if [ -n "${STEAM_PASS:-}" ] && [ -z "${STEAM_USER:-}" ]; then
+      echo "a password was resolved but no account — set STEAM_USER (or STEAM_USER_FILE) in $STEAM_ENV" >&2
+      exit 1
+    fi
+    if [ -n "${STEAM_USER:-}" ] && [ -n "${STEAM_PASS:-}" ]; then
+      echo "== steamcmd: app_update $appid validate (login $STEAM_USER via 1Password; type a 2FA/Steam Guard code if prompted) =="
+      exec "$STEAMCMD_DIR/steamcmd.sh" "+login" "$STEAM_USER" "$STEAM_PASS" "+app_update" "$appid" "validate" "+quit"
+    elif [ -n "${STEAM_USER:-}" ]; then
       echo "== steamcmd: app_update $appid validate (login: $STEAM_USER; may prompt for password/2FA if the session expired) =="
       exec "$STEAMCMD_DIR/steamcmd.sh" "+login" "$STEAM_USER" "+app_update" "$appid" "validate" "+quit"
     fi
@@ -270,7 +305,7 @@ case "${1:-}" in
     exec "$STEAMCMD_DIR/steamcmd.sh" "+app_update" "$appid" "validate" "+quit"
     ;;
   *)
-    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
