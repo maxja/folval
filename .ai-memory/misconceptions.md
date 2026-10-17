@@ -61,6 +61,8 @@
 - **Steam client purges steamcmd-staged app content** when a dependency app is absent from the staged set — host-side staging into a guest library is not a reliable install path; let the in-guest client install during the audited window (D5, see host/d5/RUNBOOK.md). Related: the client's self-update hangs at "checking available updates" against the DNS sinkhole — the window must disable the isolated NIC (d5-net-window-on/off.ps1) so the NAT path is the only egress. *(Logged: 2026-10-17)*
 - **virsh detach-interface** requires --type + --mac + --live (no --source flag); find the MAC via domiflist. *(Logged: 2026-10-17)*
 - **PowerShell 5.1 Get-ChildItem -Include** only works as expected with -Recurse (or with a wildcard path); plain `-Include` on a literal dir returns nothing. *(Logged: 2026-10-17)*
+- **tcpdump `-n` still prints service NAMES for well-known ports in text output** (443 → `.https`, 80 → `.http`): a numeric-only grep aggregation (`'> [0-9.]+\.[0-9]+:'`) silently dropped every 443 flow during port profiling and briefly under-reported the title's footprint to just the one custom high port. Aggregate with `-nn`, or match service names too. *(Logged: D3 wire profiling, 2026-10-17)*
+- **pcap coverage = ring/service start time vs event time:** an event earlier than capture (re)start is legitimately absent from the ring; compare timestamps before concluding "not captured" (and before claiming something IS captured — the ring's first packet bounds coverage from below). *(Logged: D3 wire profiling, 2026-10-17)*
 
 ## Verified Command Patterns
 
