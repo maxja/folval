@@ -1,83 +1,72 @@
 #!/bin/bash
-# folval — run a PowerShell script in the guest via qemu-ga (same delivery
-# as vm:provision). Usage: bash host/tools/guest-run.sh <script.ps1>
+# folval — run PowerShell in the guest via qemu-ga (primary path).
+# Falls back to WinRM (guest-winrm.sh) automatically when the guest agent
+# is wedged (exec failure / exec-status errors / timeout).
 #
-# Uses ONE libvirt connection for exec + polling (virsh interactive mode on
-# a coproc): at most a single polkit prompt per invocation. The previous
-# one-virsh-per-poll design raised a desktop auth dialog every 2 s for the
-# whole script runtime (user-visible prompt storm; libvirt group since
-# added, but keep it single-connection regardless).
-#
-# WARNING: scripts MUST set "$ProgressPreference = 'SilentlyContinue'" before
-# any Invoke-WebRequest/copy loops. PowerShell renders progress bars to
-# stdout when captured; qemu-ga returns them as guest-exec-status out-data
-# and a single >10 MB status response exceeds virsh's read buffer
-# (EOVERFLOW "No complete agent response found") — after which the agent
-# channel deadlocks permanently (qemu-ga keeps offering the response
-# libvirt refuses to read). Recovery: virsh destroy + start (ACPI reboot is
-# swallowed; observed 2026-10-17 — the guest itself keeps running fine).
-#
-# FOLVAL_GUEST_TIMEOUT_S (default 900) caps total wait for the guest script;
-# set 0 to wait forever.
-set -euo pipefail
+# Usage:
+#   bash host/tools/guest-run.sh <script.ps1>   # run a local script file
+#   bash host/tools/guest-run.sh -c '<ps>'      # run an inline command
+set -uo pipefail
 cd "$(dirname "$0")/../.."
 
-DOMAIN="folly-n-valor_default"
-TIMEOUT_S="${FOLVAL_GUEST_TIMEOUT_S:-900}"
-
-if [ $# -ne 1 ] || [ ! -f "$1" ]; then
-  echo "usage: bash host/tools/guest-run.sh <script.ps1>" >&2
-  exit 2
+# Discover the lab domain: exactly one running domain on this libvirt instance
+# (the RE guest). A fixed name breaks when vagrant-libvirt names it after the
+# project dir.
+domain=$(virsh -c qemu+unix:///system list --name 2>/dev/null | grep -v '^\s*$')
+n=$(printf '%s' "$domain" | grep -c . || true)
+if [[ "$n" -ne 1 ]]; then
+    echo "guest-run: expected exactly one running domain, found $n" >&2
+    exit 1
 fi
 
-script_b64=$(iconv -f UTF-8 -t UTF-16LE "$1" | base64 -w0)
-exec_json=$(printf '{"execute":"guest-exec","arguments":{"path":"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe","arg":["-NoProfile","-ExecutionPolicy","Bypass","-EncodedCommand","%s"],"capture-output":true}}' "$script_b64")
-
-coproc VSH { virsh -c qemu:///system; } || { echo "guest-run: cannot start virsh" >&2; exit 1; }
-
-cleanup() {
-  [ -n "${VSH_PID:-}" ] && kill "$VSH_PID" 2>/dev/null || true
-  wait "${VSH_PID:-0}" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# vsh <virsh command line> — send it, print output lines until the sentinel
-# (virsh "echo" command) comes back. Base64 agent output can never contain
-# the sentinel string (no underscores in the base64 alphabet).
-vsh() {
-  printf '%s\necho __VSH_OK__\n' "$1" >&"${VSH[1]}"
-  local line
-  while IFS= read -r line <&"${VSH[0]}"; do
-    [ "$line" = "__VSH_OK__" ] && return 0
-    printf '%s\n' "$line"
-  done
-  return 1
-}
-
-# Drain the interactive banner / auth errors, if any.
-vsh 'version' >/dev/null
-
-pid_json=$(vsh "qemu-agent-command $DOMAIN '$exec_json'")
-pid=$(printf '%s' "$pid_json" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
-if [ -z "$pid" ]; then
-  echo "guest-run: guest-exec failed:" >&2
-  printf '%s\n' "$pid_json" >&2
-  exit 1
+if [[ "${1:-}" == "-c" ]]; then
+    psargs=(-NoProfile -ExecutionPolicy Bypass -Command "${2:?usage: guest-run.sh -c '<powershell>'}")
+else
+    psargs=(-NoProfile -ExecutionPolicy Bypass -File "${1:?usage: guest-run.sh <script.ps1> | -c '<powershell>'}")
 fi
 
-status_cmd="qemu-agent-command $DOMAIN '{\"execute\":\"guest-exec-status\",\"arguments\":{\"pid\":$pid}}'"
-st=''
-deadline=$(( $(date +%s) + TIMEOUT_S ))
-while :; do
-  st=$(vsh "$status_cmd")
-  printf '%s' "$st" | grep -q '"exited":true' && break
-  if [ "$TIMEOUT_S" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
-    echo "guest-run: timeout after ${TIMEOUT_S}s — guest pid $pid still running" >&2
-    exit 2
-  fi
-  sleep 2
+# libvirt 12.x qemu-agent-command takes the command as a raw JSON string
+# (bare command names fail with "failed to parse JSON"); QGA guest-exec wants
+# path + arg[] (not a single cmd string).
+exec_json=$(printf '%s\n' "${psargs[@]}" | python3 -c 'import json,sys
+args=[l.rstrip("\n") for l in sys.stdin]
+print(json.dumps({"execute":"guest-exec","arguments":{"path":"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe","arg":args,"capture-output":True}}))')
+resp=$(virsh -c qemu+unix:///system qemu-agent-command "$domain" --timeout 30 "$exec_json" 2>&1)
+pid=$(printf '%s' "$resp" | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin)["return"]["pid"])
+except Exception:
+    pass' 2>/dev/null)
+if [[ -z "$pid" ]]; then
+    echo "guest-run: qemu-ga unavailable, falling back to WinRM" >&2
+    echo "guest-run: agent said: ${resp:0:200}" >&2
+    exec bash "$(dirname "$0")/guest-winrm.sh" "$@"
+fi
+
+deadline=$((SECONDS + 600))
+while (( SECONDS < deadline )); do
+    status_json=$(python3 -c 'import json,sys; print(json.dumps({"execute":"guest-exec-status","arguments":{"pid":int(sys.argv[1])}}))' "$pid")
+    resp=$(virsh -c qemu+unix:///system qemu-agent-command "$domain" --timeout 10 "$status_json" 2>&1)
+    if echo "$resp" | grep -q 'does not exist'; then
+        # qemu-ga already reaped the process without retaining its output;
+        # re-run over WinRM (guest scripts are written idempotent).
+        echo "guest-run: exec status lost (PID reaped), re-running over WinRM" >&2
+        exec bash "$(dirname "$0")/guest-winrm.sh" "$@"
+    fi
+    # An "exitcode" key only appears once the process has exited. Its value
+    # is base64 out-data/err-data (there is NO "stdout" key — decoding
+    # nothing was the silent-empty-output bug).
+    if echo "$resp" | grep -q '"exitcode":'; then
+        echo "$resp" | python3 -c 'import base64,json,sys
+d=json.load(sys.stdin)["return"]
+sys.stdout.buffer.write(base64.b64decode(d.get("out-data","")))
+sys.stdout.buffer.flush()
+sys.stderr.buffer.write(base64.b64decode(d.get("err-data","")))
+sys.stderr.buffer.flush()
+sys.exit(d.get("exitcode",0))' || exit $?
+        exit 0
+    fi
+    sleep 1
 done
-
-printf '%s' "$st" | sed -n 's/.*"out-data":"\([^"]*\)".*/\1/p' | base64 -d
-printf '%s' "$st" | sed -n 's/.*"err-data":"\([^"]*\)".*/\1/p' | base64 -d >&2 || true
-printf '%s' "$st" | grep -q '"exitcode":0' && echo "GUEST-RUN: ok" || { echo "GUEST-RUN: FAILED" >&2; exit 1; }
+echo "error: guest command timed out" >&2
+exit 124
