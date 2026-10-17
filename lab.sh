@@ -28,6 +28,15 @@
 #                                      (gitignored; first run self-updates and
 #                                      needs host internet)
 #
+# Steam (D5 acquisition via the host steamcmd above):
+#   ./lab.sh steam:login             Interactive steamcmd login (password/2FA
+#                                    typed at the prompt; session cached in
+#                                    ~/.local/share/Steam for later commands)
+#   ./lab.sh steam:download [appid]  +app_update <appid> validate — download or
+#                                    re-verify the title; appid from the argument
+#                                    or STEAM_APP_ID in host/steamcmd/steam.env
+#                                    (gitignored; also holds STEAM_USER)
+#
 #   (re)build needs a 1Password approval popup for the license key read.
 #   The .box contains the keyed Windows image: it is gitignored and must
 #   never leave this machine.
@@ -46,8 +55,9 @@ GW_OUT="logs/gateway.jsonl"
 
 STEAMCMD_DIR="host/steamcmd"
 STEAMCMD_URL="https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz"
-# Local baseline (verified 2026-10-16); Valve publishes no official checksum.
+# Local baseline (verified 2026-10-17); Valve publishes no official checksum.
 STEAMCMD_SHA256="cebf0046bfd08cf45da6bc094ae47aa39ebf4155e5ede41373b579b8f1071e7c"
+STEAM_ENV="host/steamcmd/steam.env" # gitignored: STEAM_USER, STEAM_APP_ID
 
 # Run a command, prefixing every output line with a timestamp and appending
 # to $BUILD_LOG. Returns the command's own exit status (pipefail propagates
@@ -59,6 +69,21 @@ ts_run() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$line" | tee -a "$log"
   done || rc=$?
   return $rc
+}
+
+# D5 helpers: steamcmd must be installed first; optional gitignored env file
+# carries the Steam account name and app id (secrets stay out of the repo).
+require_steamcmd() {
+  if [ ! -x "$STEAMCMD_DIR/linux32/steamcmd" ]; then
+    echo "steamcmd not installed — run './lab.sh tools:steamcmd' first." >&2
+    exit 1
+  fi
+}
+
+load_steam_env() {
+  if [ -f "$STEAM_ENV" ]; then
+    . "$STEAM_ENV"
+  fi
 }
 
 case "${1:-}" in
@@ -214,10 +239,38 @@ case "${1:-}" in
     tar xzf "$tgz" -C "$STEAMCMD_DIR"
     rm -f "$tgz"
     echo "steamcmd: installed at $STEAMCMD_DIR/steamcmd.sh"
-    echo "Next: $STEAMCMD_DIR/steamcmd.sh +login <account> +app_update <appid> validate +quit"
+    echo "Next: ./lab.sh steam:login  (then ./lab.sh steam:download <appid>)"
+    ;;
+  steam:login)
+    require_steamcmd
+    load_steam_env
+    if [ -n "${STEAM_USER:-}" ]; then
+      echo "== steamcmd login (account pre-filled from $STEAM_ENV) =="
+      echo "== type the password (and any 2FA code) when prompted; session caches in ~/.local/share/Steam =="
+      exec "$STEAMCMD_DIR/steamcmd.sh" "+login" "$STEAM_USER"
+    fi
+    echo "== steamcmd console: type 'login' at the prompt, then account/password/2FA =="
+    echo "== (tip: put STEAM_USER=... in $STEAM_ENV to pre-fill the account) =="
+    exec "$STEAMCMD_DIR/steamcmd.sh"
+    ;;
+  steam:download)
+    require_steamcmd
+    load_steam_env
+    appid="${2:-${STEAM_APP_ID:-}}"
+    if [ -z "$appid" ]; then
+      echo "usage: ./lab.sh steam:download <appid>" >&2
+      echo "       (or set STEAM_APP_ID in $STEAM_ENV)" >&2
+      exit 1
+    fi
+    if [ -n "${STEAM_USER:-}" ]; then
+      echo "== steamcmd: app_update $appid validate (login: $STEAM_USER; may prompt for password/2FA if the session expired) =="
+      exec "$STEAMCMD_DIR/steamcmd.sh" "+login" "$STEAM_USER" "+app_update" "$appid" "validate" "+quit"
+    fi
+    echo "== steamcmd: app_update $appid validate (using cached session if any; console may prompt for login) =="
+    exec "$STEAMCMD_DIR/steamcmd.sh" "+app_update" "$appid" "validate" "+quit"
     ;;
   *)
-    sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
