@@ -13,6 +13,7 @@ type Config struct {
 	Sinkhole  string // A-record answer for every name without an override
 	Overrides string // hosts-style override file path ("" disables)
 	Out       string // JSONL event log path ("" = stderr)
+	PushDir   string // directory served under /push/ ("" disables the route)
 }
 
 // ParseFlags maps CLI flags into a Config.
@@ -23,6 +24,7 @@ func ParseFlags() Config {
 	flag.StringVar(&cfg.Sinkhole, "sinkhole", "192.168.100.1", "A-record answer for names without an override")
 	flag.StringVar(&cfg.Overrides, "overrides", "", "hosts-style override file (IP name per line)")
 	flag.StringVar(&cfg.Out, "out", "", "JSONL event log path (default stderr)")
+	flag.StringVar(&cfg.PushDir, "pushdir", "", "directory served under /push/ for guest file staging (default disabled)")
 	flag.Parse()
 
 	if cfg.Sinkhole == "" {

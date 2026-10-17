@@ -80,7 +80,7 @@ func Run(cfg config.Config) error {
 	go func() { errCh <- fmt.Errorf("gateway: dns udp: %w", dnsUDPLoop(udpConn, sinkhole, ov, lg)) }()
 	go func() { errCh <- fmt.Errorf("gateway: dns tcp: %w", dnsTCPLoop(tcpLn, sinkhole, ov, lg)) }()
 	go func() {
-		srv := &http.Server{Handler: HTTPHandler(lg), ReadHeaderTimeout: 10 * time.Second}
+		srv := &http.Server{Handler: HTTPHandler(lg, cfg.PushDir), ReadHeaderTimeout: 10 * time.Second}
 		errCh <- fmt.Errorf("gateway: http: %w", srv.Serve(httpLn))
 	}()
 	return <-errCh
@@ -231,9 +231,24 @@ func ncsiResponse(host, path string) (status int, location, body string, ok bool
 // as folval-gw so accidental client hits are self-evidencing in guest-side
 // logs too. NCSI probes are the one built-in exception: they get the
 // genuine Microsoft responses so Windows reports "Internet access".
-func HTTPHandler(lg *evidence.Logger) http.Handler {
+// With pushDir set, GET /push/<name> serves files from that directory —
+// the D5 acquisition path for staging the game into the guest over the
+// isolated net (the only HTTP route the firewall permits).
+// pushPrefix is the URL path prefix routed to the staging directory.
+const pushPrefix = "/push/"
+
+func HTTPHandler(lg *evidence.Logger, pushDir string) http.Handler {
+	var pushFS http.Handler
+	if pushDir != "" {
+		pushFS = http.StripPrefix(pushPrefix, http.FileServer(http.Dir(pushDir)))
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := r.Host + r.URL.Path
+		if pushFS != nil && strings.HasPrefix(r.URL.Path, pushPrefix) {
+			lg.Event("http", r.RemoteAddr, "http.push", name, r.Method)
+			pushFS.ServeHTTP(w, r)
+			return
+		}
 		if status, location, body, ok := ncsiResponse(r.Host, r.URL.Path); ok {
 			lg.Event("http", r.RemoteAddr, "http.request", name, r.Method+" ncsi")
 			if location != "" {

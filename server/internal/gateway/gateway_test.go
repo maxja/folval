@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -128,7 +130,7 @@ func TestTCPDNSRoundTrip(t *testing.T) {
 
 func TestHTTPHandlerEchoes(t *testing.T) {
 	var logBuf bytes.Buffer
-	h := HTTPHandler(evidence.NewLogger(&logBuf))
+	h := HTTPHandler(evidence.NewLogger(&logBuf), "")
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -170,7 +172,7 @@ func TestNCSIResponses(t *testing.T) {
 }
 
 func TestHTTPHandlerNCSIOverTheWire(t *testing.T) {
-	h := HTTPHandler(testLogger())
+	h := HTTPHandler(testLogger(), "")
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -183,5 +185,51 @@ func TestHTTPHandlerNCSIOverTheWire(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 || string(body) != "Microsoft Connect Test" {
 		t.Errorf("NCSI probe not answered genuinely: %d %q", resp.StatusCode, body)
+	}
+}
+
+func TestHTTPHandlerPushRoute(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "stage.txt"), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logBuf bytes.Buffer
+	h := HTTPHandler(evidence.NewLogger(&logBuf), dir)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	// File is served...
+	resp, err := http.Get(srv.URL + "/push/stage.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || string(body) != "payload" {
+		t.Errorf("push serve: %d %q", resp.StatusCode, body)
+	}
+	if !strings.Contains(logBuf.String(), `"type":"http.push"`) {
+		t.Errorf("missing push evidence line: %q", logBuf.String())
+	}
+	// ...http.Dir keeps everything inside the root (paths are cleaned and
+	// rejoined onto the root), and missing files 404...
+	resp2, err := http.Get(srv.URL + "/push/missing.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != 404 {
+		t.Errorf("missing file should 404: %d", resp2.StatusCode)
+	}
+	// ...and with pushDir disabled the route is gone.
+	h2 := HTTPHandler(testLogger(), "")
+	srv2 := httptest.NewServer(h2)
+	defer srv2.Close()
+	resp3, err := http.Get(srv2.URL + "/push/stage.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body3, _ := io.ReadAll(resp3.Body)
+	if strings.Contains(string(body3), "payload") {
+		t.Errorf("push route must be disabled without pushdir: %q", body3)
 	}
 }

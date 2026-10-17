@@ -207,7 +207,10 @@ case "${1:-}" in
       echo "gateway: already running (pid $(cat "$GW_PID"))" >&2
       exit 1
     fi
-    nohup "$GW_BIN" -out "$GW_OUT" >/dev/null 2>&1 &
+    # /push/ serves host/push (staging dir for guest-bound files, e.g. the
+    # D5 game tarball); created on demand, gitignored except .gitkeep.
+    mkdir -p host/push
+    nohup "$GW_BIN" -out "$GW_OUT" -pushdir host/push >/dev/null 2>&1 &
     echo $! > "$GW_PID"
     sleep 1
     if kill -0 "$(cat "$GW_PID")" 2>/dev/null; then

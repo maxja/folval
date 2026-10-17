@@ -39,3 +39,7 @@ host/steamcmd/
 
 # Agent session handoff — transient, rewritten every session
 .ai-memory/handoff.md
+
+# Gateway /push/ staging dir (D5 guest-bound files) — local only
+host/push/*
+!host/push/.gitkeep
