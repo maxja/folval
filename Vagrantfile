@@ -43,6 +43,18 @@ Vagrant.configure("2") do |config|
     # Attaching it would silently defeat guest isolation — never enable.
     lv.mgmt_attach = false
     lv.qemu_use_agent = true
+
+    # Absolute-pointer input for VNC: a usb-tablet keeps host and guest
+    # cursors locked together (no relative-motion drift). Without it the
+    # domain only gets a ps/2 mouse and every VNC click fights the cursor.
+    lv.inputs = [{ type: 'tablet', bus: 'usb' }]
+
+    # Bumped from the cirrus/16MB default (Phase 4b, 2026-10-18): the game's
+    # D3D9 device creation needed VRAM headroom. Plugin options are
+    # lv.video_type / lv.video_vram (v0.11.2) — there is no lv.video_adapter.
+    # libvirt video model names: 'vga'/'qxl'/'virtio'/'cirrus' ('std' rejected).
+    lv.video_type = 'vga'
+    lv.video_vram = 262144
   end
 
   # Phase 3 provisioning does NOT use a vagrant shell provisioner: uploads
