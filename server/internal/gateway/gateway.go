@@ -9,6 +9,7 @@ package gateway
 import (
 	"bufio"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -72,17 +73,28 @@ func Run(cfg config.Config) error {
 		return fmt.Errorf("gateway: http listen: %w", err)
 	}
 	defer httpLn.Close()
+	var probeLn net.Listener
+	if cfg.TCPProbe != "" {
+		probeLn, err = net.Listen("tcp", cfg.TCPProbe)
+		if err != nil {
+			return fmt.Errorf("gateway: tcprobe listen: %w", err)
+		}
+		defer probeLn.Close()
+	}
 
 	lg.Event("meta", "", "gateway.start", "",
-		fmt.Sprintf("dns=%s http=%s sinkhole=%s overrides=%d", cfg.DNSAddr, cfg.HTTPAddr, cfg.Sinkhole, len(ov)))
+		fmt.Sprintf("dns=%s http=%s tcprobe=%s sinkhole=%s overrides=%d", cfg.DNSAddr, cfg.HTTPAddr, cfg.TCPProbe, cfg.Sinkhole, len(ov)))
 
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
 	go func() { errCh <- fmt.Errorf("gateway: dns udp: %w", dnsUDPLoop(udpConn, sinkhole, ov, lg)) }()
 	go func() { errCh <- fmt.Errorf("gateway: dns tcp: %w", dnsTCPLoop(tcpLn, sinkhole, ov, lg)) }()
 	go func() {
 		srv := &http.Server{Handler: HTTPHandler(lg, cfg.PushDir), ReadHeaderTimeout: 10 * time.Second}
 		errCh <- fmt.Errorf("gateway: http: %w", srv.Serve(httpLn))
 	}()
+	if probeLn != nil {
+		go func() { errCh <- fmt.Errorf("gateway: tcprobe: %w", tcpProbeLoop(probeLn, lg)) }()
+	}
 	return <-errCh
 }
 
@@ -196,6 +208,58 @@ func serveDNSOverTCP(conn net.Conn, sinkhole net.IP, ov map[string]net.IP, lg *e
 			return
 		}
 	}
+}
+
+// tcpProbeLoop accepts connections on the capture-only probe listener
+// (Phase 4b): the guest's analytics client SYN's the sinkhole on tcp/11234;
+// the host firewall admits that port to this listener so the first bytes of
+// the custom-port protocol can be captured without touching the guest.
+func tcpProbeLoop(ln net.Listener, lg *evidence.Logger) error {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		go serveTCPProbe(conn, lg)
+	}
+}
+
+// Probe capture bounds: total bytes per connection and per-chunk hex head.
+const (
+	probeMaxTotal = 4096
+	probeHexHead  = 256
+	probeIdle     = 30 * time.Second
+)
+
+// serveTCPProbe reads and logs what the client sends, then closes. It NEVER
+// writes — the listener is evidence capture, not a mock backend; the client
+// is expected to retry on its own backoff (observed 1/2/4/8 s on the wire).
+func serveTCPProbe(conn net.Conn, lg *evidence.Logger) {
+	defer conn.Close()
+	src := conn.RemoteAddr().String()
+	_ = conn.SetReadDeadline(time.Now().Add(probeIdle))
+	total := 0
+	buf := make([]byte, 1024)
+	for total < probeMaxTotal {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			head := buf[:n]
+			if len(head) > probeHexHead {
+				head = head[:probeHexHead]
+			}
+			lg.Event("tcp", src, "tcp.probe-data", "",
+				fmt.Sprintf("len=%d total=%d hex=%s", n, total+n, hex.EncodeToString(head)))
+			total += n
+			_ = conn.SetReadDeadline(time.Now().Add(probeIdle))
+		}
+		if err != nil {
+			break // EOF, idle timeout, or reset — capture-only, never respond
+		}
+	}
+	lg.Event("tcp", src, "tcp.probe-close", "", fmt.Sprintf("total=%d", total))
 }
 
 // ncsiBody is the exact page body Windows NCSI expects (a byte-different

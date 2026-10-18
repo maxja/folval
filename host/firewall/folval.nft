@@ -41,6 +41,7 @@ table inet folval {
 		ip daddr $GW_IP udp dport 1053 accept comment "DNS (guest saw :53)"
 		ip daddr $GW_IP tcp dport 1053 accept comment "DNS/TCP (guest saw :53)"
 		ip daddr $GW_IP tcp dport 8080 accept comment "HTTP (guest saw :80)"
+		ip daddr $GW_IP tcp dport 11234 accept comment "TCP probe listener (title analytics first-bytes capture; folval-gw -tcprobe)"
 		ip daddr $GW_IP icmp type echo-request accept comment "gate: ping GW"
 		counter drop comment "folval: default drop from guest net"
 	}

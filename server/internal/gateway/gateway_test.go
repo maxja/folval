@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
@@ -38,6 +39,54 @@ func buildQuery(t *testing.T, id uint16, name string, qtype uint16) []byte {
 }
 
 func testLogger() *evidence.Logger { return evidence.NewLogger(io.Discard) }
+
+func TestTCPProbeCapturesFirstBytesNoResponse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var logBuf bytes.Buffer
+	lg := evidence.NewLogger(&logBuf)
+	go tcpProbeLoop(ln, lg)
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("folval-probe-first-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	// Capture-only: the listener must never respond. A short read deadline
+	// proves no bytes arrive before we close our side.
+	_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	got := make([]byte, 16)
+	if n, err := conn.Read(got); n > 0 {
+		t.Fatalf("probe listener responded with %d bytes: %q", n, got[:n])
+	} else if err == nil {
+		t.Fatal("read returned 0 bytes and no error — unexpected")
+	} else if !os.IsTimeout(err) {
+		t.Fatalf("expected read timeout, got %v", err)
+	}
+	conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s := logBuf.String()
+		if strings.Contains(s, "tcp.probe-close") {
+			if !strings.Contains(s, "tcp.probe-data") {
+				t.Fatal("close logged without any data event")
+			}
+			want := hex.EncodeToString([]byte("folval-probe-first-bytes"))
+			if !strings.Contains(s, "hex="+want) {
+				t.Fatalf("captured hex missing payload; got:\n%s", s)
+			}
+			return // pass
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no tcp.probe-close within deadline; got:\n%s", logBuf.String())
+}
 
 func TestUDPDNSRoundTrip(t *testing.T) {
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
