@@ -1,7 +1,28 @@
 # Progress — folly-n-valor
 
 **Current Phase:** Phase 4 (Frida Injection & Instrumentation)
-**Current Step:** Phase 4b on hold pending decision D7
+**Current Step:** Phase 4b implementation — game attach runs IN PROGRESS. Session-1 injection SOLVED (2026-10-18); game launches under the user-session frida-server and its D3D9 startup is fully observable. BLOCKED on the D3D9 device wall (see below) — the decisive experiment localizes the failure to the GAME's own CreateDevice parameters; bisect pending.
+
+## Phase 4b — session-1 injection + game launch (2026-10-18, session of record)
+
+**The session-0 wall, diagnosed:** the SYSTEM frida-server (port 27042, Phase 4a) sees session-1 processes via `frida-ps` but `session.create()` → **"not permitted to attach"** — Windows refuses cross-session (and integrity-level) attach from a session-0 broker; frida's own docs confirm session-0 ≠ desktop attach. Session 0 has NO interactive desktop (not even a console), so a console-allocated SYSTEM server can never serve the desktop.
+
+**The solution (verified working):** a SECOND frida-server running **as the guest user inside interactive session 1**, port **27043**. Launched by the same HKCU-Run dispatcher chain the game uses (auto-logon session 1 → `ui-dispatch.cmd` → `cmd /C start frida-server.exe --listen 0.0.0.0:27043`). `FOLVAL_FRIDA_PORT=27043` switches `frida-run.sh` to it. All game/UI instrumentation goes through :27043 from now on; :27042 remains the headless census channel.
+
+**Game launch plumbing (works):** `host/tools/ui-start.sh '<target>'` re-stages the `HKCU…\Run\ui-dispatch` cmd (game = the Steam install's `…\GameData\Bin\<gameexe>`; launcher = `steam.exe` — full path in gitignored handoff) and **cycles session 1** (logoff→auto-logon→dispatcher). Caveat learned: `New-ScheduledTaskAction` from SYSTEM fails `0x800710E0`; the HKCU-Run approach is the reliable cross-session mechanism. Steam then shows its desktop login (the lab account pre-selected).
+
+**Game launch args (from Steam's own registry Run entry):** `-server_url https://<gshost> -environmentName <env>-live -branchName <branch> -steamid <steamid> -steamticket  -token ` (identities redacted; full form in gitignored handoff + `out/`). The launcher flow normally fills `steamticket`/`token`; direct launch leaves them empty.
+
+**GPU wall + DECISIVE EXPERIMENT (next session's entry point):** with the shim's D3D9 instrumentation the game reaches `CreateDevice` and gets `D3DERR_INVALIDCALL` (0x8876086C) → game's own fatal box "Couldn't create DirectX Device, try rebooting and or updating your drivers" (captured via MessageBox hook; a second variant seen on the screen reads "Can not found a DirectX device with minimum requirements"). `gpu_shim.js` **selftest** then proved: calling `Direct3DCreate9(32)` + `CreateDevice(HAL, 640x480, X8R8G8B8, count=1, windowed, flags=0x20)` and again with `NULLREF` **from inside the same injected process — BOTH S_OK**. So the d3d9 runtime, driver (Win10's built-in d3d9-over-DXGI on Basic Display), and video model are all healthy; **the game's specific parameters fail** (its call: behavior flags 0x52 incl. HW-vertex-processing/MULTITHREADED bits, 1280×720, BackBufferCount=2, and our Check* lies are NOT what it validates against — the d3d9 runtime validates against real driver caps). **Next:** bisect the game's own CreateDevice args in the hook (start: force flags to 0x20 + its own PP; then flip one field at a time) until S_OK — the shim already logs every field (`CreateDevice`/`CreateDevice.pp` events), so this is a small loop. Escalation rungs if no arg combo works: d3d9-to-D3D11 translation layer (DXTrans/wined3d11), then GPU passthrough (iGPU not visible to host, so likely a discrete card or vGPU — check `lspci` on host).
+
+**New tooling (committed):**
+- `re/frida/phase4b/gpu_shim.js` — D3D9 instrumentation + cap softening (Check* → success, GetDeviceCaps → real caps with software VP, CreateDevice hook logging all args, PP normalization) + MessageBox/ExitProcess/TerminateProcess capture (the "why did it die" recorder) + the CreateDevice selftest.
+- `re/frida/phase4b/window_enum.js` — desktop dialog reader: attach to ANY session-1 process (steam.exe works), polls `EnumWindows`+`EnumChildWindows`, emits each new visible window (title/class/pid; `#32770` dialogs include full body text). **This is how we now read Windows alert boxes without the screen** — verified capturing both GPU error variants.
+- `host/tools/ui-start.sh` — stage any launch target + cycle session 1 (documented in header). `host/tools/ui-dispatch.cmd` (guest) runs `start "ui-dispatch" <target>`.
+- `frida-run.sh`: evidence filenames now PID-suffixed (no more name collisions).
+- `host/firewall/folval.nft`: added `tcp dport 11234 accept` (gateway analytics probe; user re-applied: firewall is live, probe listening, host smoke payload logged).
+
+**Launcher analytics (captured pre-game):** via tcprobe 11234 + tls_plain on the launcher: HTTP/1.1 POST to `/log/` with a `k=v` querystring body whose fields decode to `u=<steamid>`, `g=<game build 280139>`, plus several opaque counters (`s/f/c/d/h/b/k/r`) — full sample in gitignored `out/`. TLS SNI = the analytics host (identity kept out of repo files). This is the *launcher's* analytics channel; the game's first network contact is still behind the D3D9 wall.
 
 ## Phase 4a — COMPLETE (2026-10-17, gate verified live)
 
@@ -14,13 +35,21 @@
 ## Active Decisions
 
 - **D3 Wire Profile (pinned):** TCP 443 (TLS — launcher endpoint) + TCP 11234 (publisher analytics) to the sinkhole 192.168.100.1; game-server discovery hostname is DNS-only (connection gated on the launcher flow). Zero non-OS UDP.
-- **Frida policy:** non-interactive use only via `host/tools/frida-run.sh` (REPL-free Python-API runner: attach/spawn, bounded wait, clean detach, spawned probes killed on exit). Ad-hoc CLI one-shots must redirect stdin (`</dev/null`) — the CLI always enters its REPL; `-q` only hides the banner. `--spawn` runs in session 0 → probes only; the game is desktop-launched (`host/tools/guest-start.sh`) and attached to by pid/name.
+- **Frida policy:** non-interactive use only via `host/tools/frida-run.sh` (REPL-free Python-API runner: attach/spawn, bounded wait, clean detach, spawned probes killed on exit). Ad-hoc CLI one-shots must redirect stdin (`</dev/null`). **Channel split (2026-10-18):** headless/session-0 probes → SYSTEM server :27042 (default); **anything in interactive session 1 (game, Steam UI) → user-session server :27043** (`FOLVAL_FRIDA_PORT=27043`) — session-0 attach to session-1 processes is refused by Windows, hard limit. `--spawn` on :27042 still lands in session 0 (probes only); session-1 game launches go through `ui-start.sh` + attach/spawn on :27043.
+- **D7 — RESOLVED (2026-10-18): Option B, pure Frida RE.** User decision; explore game internals via Frida. The reference project (`tmp/`, gitignored) is treated as unverified hints only — every claim is validated against the guest before it becomes load-bearing. Prerequisite satisfied same day: guest client build confirmed matching the reference-validated build (**280139** — game + UI version files in the install; Steam buildid 704222; launcher build 276072 — identities in conversation only). Guest facts gathered (names kept out of repo files): game exe 7.8 MB (no version resource — SteamStub-packed per reference), a CEF-based UI exe + `libcef.dll` 3.1453.1255, and a separate launcher (Awesomium 1.6.5 + Qt4) that ships its own OpenSSL DLLs (`libeay32.dll`/`ssleay32.dll` → hookable exports, unlike the packed game exe). Launcher-side network/web logs from the D5-era run exist in-guest and are readable via guest-run.
 - **Client TLS stack (reference intel, unconfirmed on guest):** game TLS = libCURL statically linked in the exe with the CA compiled in (no OpenSSL DLL exports — hook inside the main module); webview TLS in libcef. A hermetic mock backend needs a certificate story regardless (self-signed termination + cert-shim DLL at launch per the reference).
 
 ## Open Decisions
 
-- **D7 — Phase 4b strategy (blocks all 4b work):** Option A (adapt the third-party reference server: host-side instance, gateway DNS override for the game-server hostname, hermetic cert story) vs Option B (pure Frida RE: consolidate `re/frida/phase4b/` via the ideation gate, attach to the desktop-launched game, hook 443/11234). Prerequisite either way: confirm the guest's installed client build (reference validated against build 280139).
-- Secondary: capture the client's first pre-TLS bytes on 11234 via a gateway listener (no TLS expected there?) vs Frida hook.
+- **D8 — D3D9 wall resolution path (2026-10-18):** bisect the game's CreateDevice args in `gpu_shim.js` FIRST (cheap, in-process evidence exists); only if no arg combo yields S_OK move to a d3d9→d3d11 translation layer (e.g. DXTrans), then GPU passthrough. NULLREF creation was ruled out as a fix (inbox Win10 d3d9 REFUSES D3DDEVTYPE_NULLREF → same INVALIDCALL). VNC cursor drift fixed via usb-tablet input (Vagrantfile `lv.inputs`); video model now vga/256MB (was cirrus/16MB).
+
+## Phase 4b — interfaces landed (2026-10-18, pending approval)
+
+- **Probe family** (`re/frida/phase4b/`): `recon.js` (passive census: modules/exports + DNS + connect-map + send-family buffers, hex+ascii heads, event cap) and `tls_plain.js` (path A: launcher OpenSSL DLL exports hooked; path B: read-only marker scan of the unpacked game exe — hook targets pinned post-recon). Seven one-off probes deleted; `tests/test_phase4b.js` rewritten as an env self-check (10/10 PASS on a session-0 notepad spawn).
+- **Evidence tee:** `frida-run.sh` appends every send()/log/error as JSONL to `out/<ts>-<target>-<probe>.jsonl`; `out/` gitignored except `.gitkeep` (contents may embed title identity).
+- **Gateway `-tcprobe`** (default `192.168.100.1:11234`, `""` disables): capture-only TCP listener — logs client first bytes (hex head 256 B, 4 KB cap/conn, 30 s idle), NEVER responds; live-verified host-side (smoke payload round-tripped into `logs/gateway.jsonl`). Go vet+tests green (16).
+- **Firewall:** `host/firewall/folval.nft` gains `tcp dport 11234 accept` — **user must re-apply** (`sudo ./host/firewall/apply.sh` + reinstall to `/etc/folval`) before the guest can reach the listener.
+- **Frida 17 API notes:** static `Module.findExportByName` gone (instance methods required); `Process.enumerateModules()[0]` is not the main exe (`Process.mainModule`). All probes fixed accordingly.
 
 ## Completed Milestones
 
