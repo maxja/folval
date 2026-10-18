@@ -32,6 +32,11 @@ re/ghidra/*.rep/
 # Lab run logs (dir kept via .gitkeep; contents stay local)
 logs/*
 !logs/.gitkeep
+
+# Frida probe evidence (Phase 4b) — send()/log streams tee here; contents may
+# embed title identity, so everything but the keeper stays local
+out/*
+!out/.gitkeep
 output-*.log
 
 # Host-side steamcmd install (D5 acquisition) — downloaded artifact, never committed

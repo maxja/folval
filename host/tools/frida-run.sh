@@ -22,6 +22,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 GUEST="${FOLVAL_GUEST_IP:-192.168.100.10}"
+FRIDA_PORT="${FOLVAL_FRIDA_PORT:-27042}"   # 27043 = user-session server (desktop attaches)
 
 if [[ "${1:-}" == "--spawn" ]]; then
     mode=spawn
@@ -37,17 +38,42 @@ script="${1:?usage: frida-run.sh <pid|name> <script.js> [wait_s]}"
 shift || true
 wait_s="${1:-10}"
 
-exec host/frida-venv/bin/python - "$GUEST" "$mode" "$target" "$script" "$wait_s" <<'PYEOF'
-import frida, sys, time
+# Evidence tee: every send()/log/error line is appended as JSON to out/.
+# Contents may embed title identity — out/ is gitignored except .gitkeep.
+mkdir -p out
+run_ts=$(date +%Y%m%d-%H%M%S)
+run_tag=$(basename "$script" .js)
+# tag: last path component of the target (pid, name, or image), sanitized
+run_tgt=$(printf '%s' "${target##*\\}" | tr -c 'A-Za-z0-9._-' '_')
+run_tgt="${run_tgt%%_*}"
+: "${run_tgt:=spawn}"
+export FOLVAL_RUN_OUT="out/${run_ts}-${run_tgt}-${run_tag}.jsonl"
+
+echo "[frida-run] evidence -> $FOLVAL_RUN_OUT" >&2
+
+exec host/frida-venv/bin/python - "$GUEST:$FRIDA_PORT" "$mode" "$target" "$script" "$wait_s" <<'PYEOF'
+import frida, json, os, sys, time
 
 guest, mode, target, script_path, wait_s = sys.argv[1:6]
 wait_s = float(wait_s)
 
+out_path = os.environ.get("FOLVAL_RUN_OUT")
+out_file = open(out_path, "a", encoding="utf-8") if out_path else None
+
+def rec(kind, **fields):
+    if out_file:
+        out_file.write(json.dumps({"ts": round(time.time(), 3), "kind": kind, **fields}) + "\n")
+        out_file.flush()
+
 dev = frida.get_device_manager().add_remote_device(guest)
 
 if mode == "spawn":
-    pid = dev.spawn([target])
-    print(f"[frida-run] spawned {target} as pid {pid}", file=sys.stderr, flush=True)
+    argv = [target]
+    if os.environ.get("FOLVAL_SPAWN_ARGS"):
+        import shlex
+        argv += shlex.split(os.environ["FOLVAL_SPAWN_ARGS"])
+    pid = dev.spawn(argv)
+    print(f"[frida-run] spawned {argv} as pid {pid}", file=sys.stderr, flush=True)
 else:
     if target.isdigit():
         pid = int(target)
@@ -64,13 +90,17 @@ def on_message(message, data):
     if message["type"] == "send":
         suffix = f" (+{len(data)}B binary)" if data else ""
         print(f"[send] {message['payload']}{suffix}", flush=True)
+        rec("send", payload=message["payload"], bin=len(data) if data else 0)
     elif message["type"] == "error":
         print(f"[error] {message.get('stack') or message.get('description')}", flush=True)
+        rec("error", text=message.get("description"), stack=message.get("stack"))
     else:
         print(f"[{message['type']}] {message}", flush=True)
+        rec(message["type"], text=str(message))
 
 def on_log(level, text):
     print(f"[{level}] {text}", flush=True)
+    rec("log", level=level, text=text)
 
 try:
     script = session.create_script(open(script_path, encoding="utf-8").read())
@@ -97,6 +127,9 @@ try:
         except frida.InvalidOperationError:
             pass
     print("[frida-run] detached cleanly", file=sys.stderr)
+    rec("meta", event="detach", target=target, script=script_path)
+    if out_file:
+        out_file.close()
 finally:
     pass
 PYEOF
