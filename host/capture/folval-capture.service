@@ -12,9 +12,7 @@ Type=simple
 # checkout's captures/pcap/, not a system path. systemd does not expand ~ or
 # $USER in ExecStart, so the repo path is supplied via a sysconfig env file
 # (systemd does expand ${VAR} from Environment=): render it once at install
-# time from the repo root:
-#   printf 'FOLVAL_CAPTURE_DIR=%s/captures/pcap\n' "$PWD" | sudo tee /etc/sysconfig/folval-capture
-# -n disables reverse DNS so the pcap is uncontaminated by host lookups.
+# time — or just run host/capture/install.sh (root), which renders it.
 EnvironmentFile=/etc/sysconfig/folval-capture
 # NOTE: tcpdump drops privileges to the "tcpdump" user by default (-Z
 # tcpdump), which cannot create files in the project-local captures dir —
@@ -25,7 +23,14 @@ EnvironmentFile=/etc/sysconfig/folval-capture
 # early, fails with "No such device", and hits the start limit (observed
 # after host reboot 2026-10-17).
 ExecStartPre=/bin/sh -c 'i=0; while [ ! -e /sys/class/net/virbr1 ] && [ "$i" -lt 120 ]; do sleep 1; i=$((i+1)); done; test -e /sys/class/net/virbr1'
-ExecStart=/usr/sbin/tcpdump -i virbr1 -n -s 0 -U -W 20 -C 50 -Z root -w ${FOLVAL_CAPTURE_DIR}/folval.pcap
+# DATE-STAMPED RING BASE (2026-10-19): the base carries the service-start
+# timestamp (folval-YYYYMMDD-HHMMSS.pcapNN), so every host boot / restart
+# starts a FRESH ring and old eras are never silently overwritten — the
+# filename IS the coverage boundary (first possible packet time), and
+# 'lab.sh evidence:clean' retires stale-era rings wholesale. Escaping:
+# systemd would eat $ and %, so $$ -> literal $ for sh, %% -> literal % for
+# date(1). Old-style folval.pcapNN files are pre-2026-10-19 artifacts.
+ExecStart=/bin/sh -c 'exec /usr/sbin/tcpdump -i virbr1 -n -s 0 -U -W 20 -C 50 -Z root -w "$${FOLVAL_CAPTURE_DIR}/folval-$$(date +%%Y%%m%%d-%%H%%M%%S).pcap"'
 Restart=on-failure
 RestartSec=5
 

@@ -41,6 +41,29 @@
 #                                    active op session, as in the (re)build flow;
 #                                    2FA/Steam Guard codes are still typed)
 #
+# Evidence hygiene (raw captures/logs/probe-output are DISPOSABLE; distilled
+# knowledge lives in re/docs + out/EVIDENCE.md — see that file for the track
+# & clean workflow):
+#   ./lab.sh evidence:status        Inventory captures/pcap, logs/, out/:
+#                                    sizes, per-ring pcap coverage windows
+#                                    (first/last packet, via capinfos), ring
+#                                    liveness, and what evidence:clean would
+#                                    keep vs remove. Read-only.
+#   ./lab.sh evidence:clean [--force]
+#                                   DRY-RUN by default. Removes:
+#                                     - logs/*         (except .gitkeep)
+#                                     - captures/pcap stale-era rings (bases
+#                                       still being written are kept; a base
+#                                       with any member touched <15 min ago
+#                                       counts as live)
+#                                     - out/*          (except .keep list +
+#                                       EVIDENCE.md + keepers themselves)
+#   ./lab.sh capture:install       (Re)deploy host/capture/folval-capture.service
+#                                   as root — run from a HOST shell:
+#                                   sudo ./host/capture/install.sh (this
+#                                   wrapper just execs it; agent shell has
+#                                   no sudo)
+#
 #   (re)build needs a 1Password approval popup for the license key read.
 #   The .box contains the keyed Windows image: it is gitignored and must
 #   never leave this machine.
@@ -62,6 +85,11 @@ STEAMCMD_URL="https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.ta
 # Local baseline (verified 2026-10-17); Valve publishes no official checksum.
 STEAMCMD_SHA256="cebf0046bfd08cf45da6bc094ae47aa39ebf4155e5ede41373b579b8f1071e7c"
 STEAM_ENV="host/steamcmd/steam.env" # gitignored: STEAM_USER, STEAM_APP_ID
+
+# Evidence hygiene (see the header docs + out/EVIDENCE.md)
+PCAP_DIR="captures/pcap"
+PCAP_STALE_MIN=15 # ring base with a member touched this recently = LIVE
+OUT_KEEP="out/.keep"
 
 # Run a command, prefixing every output line with a timestamp and appending
 # to $BUILD_LOG. Returns the command's own exit status (pipefail propagates
@@ -106,6 +134,59 @@ resolve_steam_auth() {
       exit 1
     }
   fi
+}
+
+# Ring base of a tcpdump ring member: strip the trailing 2-digit index
+# (folval-20261019-101500.pcap07 -> folval-20261019-101500.pcap; legacy
+# pre-2026-10-19 folval.pcap03 -> folval.pcap).
+pcap_base() {
+  printf '%s' "$1" | sed -E 's/[0-9]{2}$//'
+}
+
+# Ring bases presumed LIVE (clean must not touch them):
+#   (a) the base in a running tcpdump -w argument, if pgrep can see it —
+#       NOTE: from the agent/zed container the host PID namespace is
+#       invisible, so this check alone is NOT trustworthy;
+#   (b) any base with a member modified < PCAP_STALE_MIN minutes ago — the
+#       sealed guest's NCSI retries keep a live ring's mtimes fresh, so
+#       recency is the namespace-proof liveness signal.
+pcap_live_bases() {
+  local f b age bases=""
+  local w=""
+  w=$(pgrep -af tcpdump 2>/dev/null | grep -oE ' -w [^ ]+' | head -1 | awk '{print $2}') || true
+  if [ -n "$w" ]; then
+    bases=" $(basename "$(pcap_base "$w")") "
+  fi
+  for f in "$PCAP_DIR"/*; do
+    if [ -f "$f" ]; then
+      b=$(basename "$f")
+      if [ "$b" != ".gitkeep" ]; then
+        b=$(pcap_base "$b")
+        case "$bases" in
+          *" $b "*) ;;
+          *)
+            age=$(( $(date +%s) - $(stat -c %Y "$f") ))
+            if [ "$age" -lt $((PCAP_STALE_MIN * 60)) ]; then
+              bases="$bases $b "
+            fi
+            ;;
+        esac
+      fi
+    fi
+  done
+  printf '%s' "$bases"
+}
+
+# Keep-list membership for out/: special files plus anything listed verbatim
+# (one filename per line) in out/.keep.
+out_keep() {
+  case "$1" in
+    .keep|EVIDENCE.md|.gitkeep) return 0 ;;
+  esac
+  if [ -f "$OUT_KEEP" ] && grep -qxF -- "$1" "$OUT_KEEP"; then
+    return 0
+  fi
+  return 1
 }
 
 case "${1:-}" in
@@ -307,8 +388,95 @@ case "${1:-}" in
     echo "== steamcmd: app_update $appid validate (using cached session if any; console may prompt for login) =="
     exec "$STEAMCMD_DIR/steamcmd.sh" "+app_update" "$appid" "validate" "+quit"
     ;;
+  evidence:status)
+    echo "== tcpdump (may be hidden by the container PID namespace) =="
+    pgrep -af tcpdump || echo "(not visible from this shell)"
+    echo
+    live=$(pcap_live_bases)
+    echo "== $PCAP_DIR ($(du -sh "$PCAP_DIR" | cut -f1)) — live bases:${live:- none} =="
+    for f in "$PCAP_DIR"/*; do
+      [ -f "$f" ] || continue
+      b=$(basename "$f")
+      [ "$b" = ".gitkeep" ] && continue
+      cov=""
+      if command -v capinfos >/dev/null 2>&1; then
+        cov=$(capinfos -a -e "$f" 2>/dev/null | awk -F': ' '
+          / packet time:/ {n++; if (n==1) f=$2; else l=$2}
+          END {if (f!="") printf "  %s .. %s", f, l}')
+      fi
+      [ -z "$cov" ] && cov="  (mtimes) $(stat -c %y "$f" | cut -d. -f1)"
+      state=STALE
+      case "$live" in *" $(pcap_base "$b") "*) state=LIVE;; esac
+      printf '  %-6s %-42s %10s%s\n' "$state" "$b" "$(du -h "$f" | cut -f1)" "$cov"
+    done | sort -k2
+    echo
+    echo "== logs/ ($(du -sh logs | cut -f1)) — all contents are cleanable =="
+    find logs -mindepth 1 ! -name '.gitkeep' -printf '  %10s  %p\n' | sort -k2 || true
+    echo
+    echo "== out/ ($(du -sh out | cut -f1)) — keepers per out/.keep =="
+    for f in out/*; do
+      [ -e "$f" ] || continue
+      b=$(basename "$f")
+      if out_keep "$b"; then state=KEEP; else state=CLEAN; fi
+      printf '  %-6s %10s  %s\n' "$state" "$(du -h "$f" | cut -f1)" "$b"
+    done | sort -k4
+    echo
+    echo "next: ./lab.sh evidence:clean          (dry run)"
+    echo "      ./lab.sh evidence:clean --force   (delete)"
+    ;;
+  evidence:clean)
+    force="${2:-}"
+    if [ "$force" != "--force" ] && [ -n "$force" ]; then
+      echo "usage: ./lab.sh evidence:clean [--force]" >&2
+      exit 1
+    fi
+    live=$(pcap_live_bases)
+    echo "live ring bases (kept):${live:- none}"
+    echo
+    # --- logs/ ---
+    echo "== logs/ (all except .gitkeep) =="
+    for f in logs/*; do
+      if [ -e "$f" ] && [ "$(basename "$f")" != ".gitkeep" ]; then
+        s=$(stat -c %s "$f")
+        echo "  rm $f ($s bytes)"
+        if [ "$force" = "--force" ]; then rm -f "$f"; fi
+      fi
+    done
+    # --- captures/pcap ---
+    echo "== $PCAP_DIR (stale-era rings) =="
+    for f in "$PCAP_DIR"/*; do
+      if [ -f "$f" ] && [ "$(basename "$f")" != ".gitkeep" ]; then
+        case "$live" in
+          *" $(pcap_base "$(basename "$f")") "*) ;;
+          *)
+            s=$(stat -c %s "$f")
+            echo "  rm $f ($s bytes)"
+            if [ "$force" = "--force" ]; then rm -f "$f"; fi
+            ;;
+        esac
+      fi
+    done
+    # --- out/ ---
+    echo "== out/ (everything not in .keep) =="
+    for f in out/*; do
+      if [ -e "$f" ] && ! out_keep "$(basename "$f")"; then
+        s=$(stat -c %s "$f")
+        echo "  rm $f ($s bytes)"
+        if [ "$force" = "--force" ]; then rm -f "$f"; fi
+      fi
+    done
+    echo
+    if [ "$force" = "--force" ]; then
+      echo "clean: done (live rings and keepers preserved)"
+    else
+      echo "clean: DRY RUN — pass --force to delete the files above"
+    fi
+    ;;
+  capture:install)
+    exec bash host/capture/install.sh
+    ;;
   *)
-    sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,69p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
