@@ -282,3 +282,125 @@ func TestHTTPHandlerPushRoute(t *testing.T) {
 		t.Errorf("push route must be disabled without pushdir: %q", body3)
 	}
 }
+
+func TestParseForward(t *testing.T) {
+	spec, err := parseForward("192.168.100.1:8443->192.168.100.10:8443")
+	if err != nil || spec.Listen != "192.168.100.1:8443" || spec.Target != "192.168.100.10:8443" {
+		t.Fatalf("valid spec not parsed: %+v err=%v", spec, err)
+	}
+	if spec, err := parseForward(""); err != nil || spec.Listen != "" {
+		t.Fatalf("empty input must yield disabled spec, got %+v err=%v", spec, err)
+	}
+	for _, bad := range []string{"no-arrow", "->target", "listen->", "192.168.100.1:8443->noport"} {
+		if _, err := parseForward(bad); err == nil {
+			t.Errorf("invalid spec %q accepted", bad)
+		}
+	}
+}
+
+// TestForwardRelaysAndLogs checks the oracle path end-to-end: a client
+// through the forward listener reaches the target and gets its bytes back
+// (the mode ANSWERS, unlike the capture-only probes), and the evidence log
+// records open, first-chunk head per direction, and close with totals.
+func TestForwardRelaysAndLogs(t *testing.T) {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	go func() { // echo server = stand-in for the reference backend
+		for {
+			c, err := target.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(c)
+		}
+	}()
+
+	fwdLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fwdLn.Close()
+	var logBuf bytes.Buffer
+	lg := evidence.NewLogger(&logBuf)
+	go forwardLoop(fwdLn, target.Addr().String(), lg)
+
+	conn, err := net.Dial("tcp", fwdLn.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	payload := []byte("folval-oracle-relay")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	echo := make([]byte, len(payload))
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.ReadFull(conn, echo); err != nil {
+		t.Fatalf("relay did not answer: %v", err)
+	}
+	if !bytes.Equal(echo, payload) {
+		t.Fatalf("echo mismatch: %q", echo)
+	}
+	conn.Close() // triggers relay close + logging
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s := logBuf.String()
+		if strings.Contains(s, "tcp.forward-close") {
+			if !strings.Contains(s, "tcp.forward-open") || !strings.Contains(s, `"type":"tcp.forward-data"`) {
+				t.Fatalf("missing open/data events; got:\n%s", s)
+			}
+			if !strings.Contains(s, "hex="+hex.EncodeToString(payload)) {
+				t.Fatalf("first-chunk hex head missing; got:\n%s", s)
+			}
+			// detail is JSON: '>' is escaped as \u003e
+			if !strings.Contains(s, "client-\\u003eserver=19") || !strings.Contains(s, "server-\\u003eclient=19") {
+				t.Fatalf("byte totals missing; got:\n%s", s)
+			}
+			return // pass
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no tcp.forward-close within deadline; got:\n%s", logBuf.String())
+}
+
+// TestForwardDialFailureLogged pins the failure mode the game sees when the
+// reference server is not up yet: connection accepted, then closed again —
+// logged as dial-failed so the evidence trail explains the client's retry.
+func TestForwardDialFailureLogged(t *testing.T) {
+	// Nothing listens on the target port (reserved TEST-NET-3 loop is fine
+	// for connect attempts; use 127.0.0.1 with an unlikely port).
+	fwdLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fwdLn.Close()
+	var logBuf bytes.Buffer
+	lg := evidence.NewLogger(&logBuf)
+	go forwardLoop(fwdLn, "127.0.0.1:1", lg)
+
+	conn, err := net.Dial("tcp", fwdLn.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 8)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("expected EOF after dial failure")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(logBuf.String(), "dial-failed") {
+			return // pass
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no dial-failed event within deadline; got:\n%s", logBuf.String())
+}

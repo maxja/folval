@@ -20,6 +20,9 @@
 #   ./lab.sh gateway:build       go build + go test (binary: server/folval-gw)
 #   ./lab.sh gateway:run         Start folval-gw in the background
 #                                (events -> logs/gateway.jsonl, pid -> logs/folval-gw.pid)
+#   ./lab.sh gateway:oracle      Same, plus -forward 8443->guest:8443 (D9 oracle:
+#                                tlsprobe replaced by a TCP relay to the in-guest
+#                                reference server; pcap ring records the conversation)
 #   ./lab.sh gateway:status      Is folval-gw running?
 #   ./lab.sh gateway:stop        Stop the background folval-gw
 #
@@ -189,6 +192,28 @@ out_keep() {
   return 1
 }
 
+# Start folval-gw in the background with optional extra flags (shared by
+# gateway:run and gateway:oracle).
+gw_start() {
+  if [ -f "$GW_PID" ] && kill -0 "$(cat "$GW_PID")" 2>/dev/null; then
+    echo "gateway: already running (pid $(cat "$GW_PID"))" >&2
+    exit 1
+  fi
+  # /push/ serves host/push (staging dir for guest-bound files, e.g. the
+  # D5 game tarball); created on demand, gitignored except .gitkeep.
+  mkdir -p host/push
+  nohup "$GW_BIN" -out "$GW_OUT" -pushdir host/push "$@" >/dev/null 2>&1 &
+  echo $! > "$GW_PID"
+  sleep 1
+  if kill -0 "$(cat "$GW_PID")" 2>/dev/null; then
+    echo "gateway: running (pid $(cat "$GW_PID")), events -> $GW_OUT"
+  else
+    echo "gateway: failed to start — try './lab.sh gateway:build' or run $GW_BIN in the foreground" >&2
+    rm -f "$GW_PID"
+    exit 1
+  fi
+}
+
 case "${1:-}" in
   vm:build)
     echo "==== folval build started $(date '+%Y-%m-%d %H:%M:%S') on $(hostname) ====" > "$BUILD_LOG"
@@ -284,23 +309,13 @@ case "${1:-}" in
     echo "gateway: built $GW_BIN (vet + tests green)"
     ;;
   gateway:run)
-    if [ -f "$GW_PID" ] && kill -0 "$(cat "$GW_PID")" 2>/dev/null; then
-      echo "gateway: already running (pid $(cat "$GW_PID"))" >&2
-      exit 1
-    fi
-    # /push/ serves host/push (staging dir for guest-bound files, e.g. the
-    # D5 game tarball); created on demand, gitignored except .gitkeep.
-    mkdir -p host/push
-    nohup "$GW_BIN" -out "$GW_OUT" -pushdir host/push >/dev/null 2>&1 &
-    echo $! > "$GW_PID"
-    sleep 1
-    if kill -0 "$(cat "$GW_PID")" 2>/dev/null; then
-      echo "gateway: running (pid $(cat "$GW_PID")), events -> $GW_OUT"
-    else
-      echo "gateway: failed to start — try './lab.sh gateway:build' or run $GW_BIN in the foreground" >&2
-      rm -f "$GW_PID"
-      exit 1
-    fi
+    gw_start
+    ;;
+  gateway:oracle)
+    # D9 oracle mode: the tlsprobe listener becomes a TCP relay to the
+    # in-guest reference server (:8443), so the game's TLS gets ANSWERED
+    # while the pcap ring records the full conversation on the wire.
+    gw_start -forward "192.168.100.1:8443->192.168.100.10:8443"
     ;;
   gateway:status)
     if [ -f "$GW_PID" ] && kill -0 "$(cat "$GW_PID")" 2>/dev/null; then

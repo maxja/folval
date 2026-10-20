@@ -82,6 +82,14 @@ func Run(cfg config.Config) error {
 		defer probeLn.Close()
 	}
 	var tlsLn net.Listener
+	fwd, fwdErr := parseForward(cfg.Forward)
+	if fwdErr != nil {
+		return fwdErr
+	}
+	// One listener, two modes: forwarding replaces an overlapping probe.
+	if fwd.Listen != "" && fwd.Listen == cfg.TLSProbe {
+		cfg.TLSProbe = ""
+	}
 	if cfg.TLSProbe != "" {
 		tlsLn, err = net.Listen("tcp", cfg.TLSProbe)
 		if err != nil {
@@ -89,9 +97,17 @@ func Run(cfg config.Config) error {
 		}
 		defer tlsLn.Close()
 	}
+	var fwdLn net.Listener
+	if fwd.Listen != "" {
+		fwdLn, err = net.Listen("tcp", fwd.Listen)
+		if err != nil {
+			return fmt.Errorf("gateway: forward listen: %w", err)
+		}
+		defer fwdLn.Close()
+	}
 
 	lg.Event("meta", "", "gateway.start", "",
-		fmt.Sprintf("dns=%s http=%s tcprobe=%s tlsprobe=%s sinkhole=%s overrides=%d", cfg.DNSAddr, cfg.HTTPAddr, cfg.TCPProbe, cfg.TLSProbe, cfg.Sinkhole, len(ov)))
+		fmt.Sprintf("dns=%s http=%s tcprobe=%s tlsprobe=%s forward=%s->%s sinkhole=%s overrides=%d", cfg.DNSAddr, cfg.HTTPAddr, cfg.TCPProbe, cfg.TLSProbe, fwd.Listen, fwd.Target, cfg.Sinkhole, len(ov)))
 
 	errCh := make(chan error, 4)
 	go func() { errCh <- fmt.Errorf("gateway: dns udp: %w", dnsUDPLoop(udpConn, sinkhole, ov, lg)) }()
@@ -105,6 +121,9 @@ func Run(cfg config.Config) error {
 	}
 	if tlsLn != nil {
 		go func() { errCh <- fmt.Errorf("gateway: tlsprobe: %w", tcpProbeLoop(tlsLn, lg)) }()
+	}
+	if fwdLn != nil {
+		go func() { errCh <- fmt.Errorf("gateway: forward: %w", forwardLoop(fwdLn, fwd.Target, lg)) }()
 	}
 	return <-errCh
 }
@@ -271,6 +290,126 @@ func serveTCPProbe(conn net.Conn, lg *evidence.Logger) {
 		}
 	}
 	lg.Event("tcp", src, "tcp.probe-close", "", fmt.Sprintf("total=%d", total))
+}
+
+// ForwardSpec is a parsed -forward flag: relay LISTEN to TARGET.
+type ForwardSpec struct {
+	Listen string
+	Target string
+}
+
+// parseForward validates the "LISTEN->TARGET" flag form; empty input
+// yields an empty spec (disabled).
+func parseForward(s string) (ForwardSpec, error) {
+	if s == "" {
+		return ForwardSpec{}, nil
+	}
+	i := strings.Index(s, "->")
+	if i <= 0 || i+2 >= len(s) {
+		return ForwardSpec{}, fmt.Errorf("gateway: forward must be LISTEN->TARGET, got %q", s)
+	}
+	spec := ForwardSpec{Listen: strings.TrimSpace(s[:i]), Target: strings.TrimSpace(s[i+2:])}
+	for _, addr := range []string{spec.Listen, spec.Target} {
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			return ForwardSpec{}, fmt.Errorf("gateway: forward address %q: %w", addr, err)
+		}
+	}
+	return spec, nil
+}
+
+// forwardLoop relays each accepted connection to the oracle target (the
+// in-guest reference server). Unlike the capture-only probes this mode
+// ANSWERS — the client's TLS gets a server response so the handshake (and
+// the game's protocol above it) proceeds while the host pcap ring records
+// every byte on the wire.
+func forwardLoop(ln net.Listener, target string, lg *evidence.Logger) error {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		go serveForward(conn, target, lg)
+	}
+}
+
+// serveForward dials the target and relays bidirectionally, logging
+// open/close with per-direction byte totals. Dial failures are logged and
+// the connection closed (client sees an immediate FIN — distinct from the
+// capture-only probe, which never responds at all).
+func serveForward(conn net.Conn, target string, lg *evidence.Logger) {
+	defer conn.Close()
+	src := conn.RemoteAddr().String()
+	up, err := net.DialTimeout("tcp", target, 5*time.Second)
+	if err != nil {
+		lg.Event("tcp", src, "tcp.forward-open", target, "dial-failed: "+err.Error())
+		return
+	}
+	defer up.Close()
+	lg.Event("tcp", src, "tcp.forward-open", target, "relay")
+	cs, sc := relayLogged(conn, up, src, lg)
+	lg.Event("tcp", src, "tcp.forward-close", target, fmt.Sprintf("client->server=%d server->client=%d", cs, sc))
+}
+
+// relayLogged copies both directions concurrently; the first direction to
+// finish closes both sockets so the other unblocks. Returns byte totals.
+func relayLogged(client, server net.Conn, src string, lg *evidence.Logger) (cs, sc int64) {
+	type dirResult struct {
+		dir string
+		n   int64
+	}
+	res := make(chan dirResult, 2)
+	copyOne := func(from, to net.Conn, dir string) {
+		n, _ := copyLogged(from, to, dir, src, lg)
+		res <- dirResult{dir, n}
+	}
+	go copyOne(client, server, "c2s")
+	go copyOne(server, client, "s2c")
+	r1 := <-res
+	client.Close()
+	server.Close()
+	r2 := <-res
+	for _, r := range []dirResult{r1, r2} {
+		if r.dir == "c2s" {
+			cs = r.n
+		} else {
+			sc = r.n
+		}
+	}
+	return
+}
+
+// copyLogged copies src->dst, logging ONLY the first chunk (hex head,
+// probeHexHead cap) as tcp.forward-data — ClientHello/SNI parity with probe
+// mode without bloating the JSONL on long relays; the pcap ring holds the
+// authoritative bytes.
+func copyLogged(from, to net.Conn, dir, src string, lg *evidence.Logger) (int64, error) {
+	var total int64
+	first := true
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := from.Read(buf)
+		if n > 0 {
+			if first {
+				head := buf[:n]
+				if len(head) > probeHexHead {
+					head = head[:probeHexHead]
+				}
+				lg.Event("tcp", src, "tcp.forward-data", dir,
+					fmt.Sprintf("len=%d total=%d hex=%s", n, total+int64(n), hex.EncodeToString(head)))
+				first = false
+			}
+			total += int64(n)
+			if _, werr := to.Write(buf[:n]); werr != nil {
+				return total, werr
+			}
+		}
+		if err != nil {
+			return total, err
+		}
+	}
 }
 
 // ncsiBody is the exact page body Windows NCSI expects (a byte-different
