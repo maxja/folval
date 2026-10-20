@@ -20,6 +20,41 @@ text logs are the exception, never the rule.
 is ever genuinely needed (e.g. runner-level stderr), write it as
 `out/<same-stem>.console.log` — never `/tmp`.
 
+## Identifying & cleaning dated artifacts (runbook)
+
+**Where dates live (naming grammar):**
+- `out/` — `<YYYYMMDD>-<HHMMSS>-<target>-<probe>.jsonl`; the date prefix is the run
+  moment. Keepers are whitelisted by exact filename in `out/.keep`.
+- `captures/pcap/` — ring members share a **base**, the date-stamped filename root:
+  `folval-YYYYMMDD-HHMMSS.pcapNN` (current unit) or legacy `folval.pcapNN`. The base's
+  first-capture timestamp = when coverage started; the newest member's last packet =
+  when coverage ended. **The base filename is the coverage boundary** — never rename.
+- `logs/` — undated, append-per-run (`gateway.jsonl`). Treated as disposable.
+
+**Liveness rule for pcap rings:** a base is **LIVE** only while a tcpdump process
+holds it (`pgrep -af tcpdump` → `-w <file>`); everything else is STALE and safely
+deletable *once its window is distilled*. Caveat: a containerized shell may not see
+host processes (PID-namespace) — if `evidence:status` says "not visible", judge by
+effect (`capinfos` last-packet time vs wall clock; a ring whose last packet predates
+the running session cannot be the live one).
+
+**Cleanup order (matters):**
+1. **Distill first, delete second.** Raw evidence deleted before its findings land in
+   `out/EVIDENCE.md` / `re/docs/PROGRESS.md` / `.ai-memory/misconceptions.md` is gone
+   forever.
+2. Stop the gateway (`./lab.sh gateway:stop`) — cleaning `logs/` while it runs
+   unlinks an open fd: space is not freed and the ledger splits across inodes.
+3. Curate `out/.keep` (add exact filenames worth keeping).
+4. Dry-run: `./lab.sh evidence:status` — read the KEEP/STALE/CLEAN verdicts and ring
+   coverage windows before agreeing with them.
+5. `./lab.sh evidence:clean --force` — removes non-keepers in `out/`, empties
+   `logs/`, retires STALE ring bases; LIVE bases and keepers are preserved.
+6. Verify: `du -sh out/ logs/ captures/pcap/` and re-run `evidence:status`.
+
+**Never clean:** `.keep`-listed files, `out/EVIDENCE.md`, a ring base whose coverage
+window includes a session you haven't distilled yet, and anything under a running
+process's cwd/fd (stop it first).
+
 ## Commit boundary
 
 Everything under `out/`, `logs/`, `captures/`, `tmp/`, `.ai-memory/` is
