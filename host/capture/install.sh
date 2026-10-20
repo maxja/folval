@@ -27,12 +27,23 @@ printf 'FOLVAL_CAPTURE_DIR=%s/captures/pcap\n' "$repo" > "$sysconfig"
 chown root:root "$sysconfig"
 chmod 0644 "$sysconfig"
 
+if [ ! -e /sys/class/net/virbr1 ]; then
+	echo "warning: /sys/class/net/virbr1 missing — isolated network down (bench off)?" >&2
+	echo "         the unit will keep retrying in the background until the bridge appears." >&2
+fi
+
 systemctl daemon-reload
-systemctl restart folval-capture.service
+# --no-block, deliberately: the unit's ExecStartPre legally waits up to 120 s
+# for virbr1 (boot-race guard) and Restart=on-failure retries forever — a
+# blocking `systemctl restart` here would hang the deploy on either path.
+# The unit self-heals; we only report.
+systemctl restart --no-block folval-capture.service
+sleep 2
 
 echo "--- deployed folval-capture ---"
 echo "unit:    /etc/systemd/system/folval-capture.service ($(stat -c %y /etc/systemd/system/folval-capture.service | cut -d' ' -f1))"
 echo "capture: $sysconfig -> $(cat "$sysconfig")"
 echo "state:   $(systemctl is-active folval-capture.service) (activating/waiting is fine if virbr1 is down)"
+echo "detail:  systemctl status folval-capture   # stuck job / ExecStartPre wait shows here"
 echo "--- current ring in $repo/captures/pcap ---"
 ls -lt "$repo/captures/pcap" | head -5
