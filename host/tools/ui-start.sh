@@ -33,15 +33,24 @@ steam='C:\Program Files (x86)\Steam\steam.exe'
 windir="${img%\\*}"   # guest dir of the target (caller passes backslash paths)
 
 # Dispatcher body (cmd). One array element per line.
-lines=('@echo off' 'rem staged by folval ui-start.sh'
+lines=('@echo off' 'rem staged by folval ui-start.sh (overlay corrupt after steam settle)'
       # user-session frida-server: SYSTEM/session-0 frida-server cannot inject
       # into desktop-session processes (verified live); same-user instance on
       # :27043 attaches to launcher/game/UI. Idempotent via netstat guard.
-      'netstat -an | find "0.0.0.0:27043" | find "LISTENING" >nul || start "" /MIN C:\frida\frida-server.exe -l 0.0.0.0:27043')
+      'netstat -an | find "0.0.0.0:27043" | find "LISTENING" >nul || start "" /MIN C:\frida\frida-server.exe -l 0.0.0.0:27043'
+      # overlay dir-block BEFORE Steam starts: Steam's startup validation
+      # restores the overlay DLLs (breaking Reset); block+armor first.
+      'powershell -NoProfile -ExecutionPolicy Bypass -File C:\re\overlayblock.ps1')
 if [[ "$img" != "$steam" ]]; then
     lines+=("tasklist /FI \"IMAGENAME eq steam.exe\" | find /I \"steam.exe\" >nul || start \"\" \"$steam\""
             'timeout /t 75 /nobreak >nul')
+else
+    lines+=("start \"\" \"$steam\""
+            'timeout /t 75 /nobreak >nul')
 fi
+# Steam's startup validation is done by now (75s settle): corrupt the
+# overlay DLLs in-place so later game launches fail LoadLibrary (Reset OK).
+lines+=('powershell -NoProfile -ExecutionPolicy Bypass -File C:\re\overlaycorrupt.ps1')
 lines+=("pushd \"$windir\""
         "start \"\" \"$img\"${args:+ $args}"
         'popd')
