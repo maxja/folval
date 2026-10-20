@@ -22,6 +22,7 @@ table inet folval {
 		iifname $BR_IF ip daddr $GW_IP udp dport 53 dnat to $GW_IP:1053
 		iifname $BR_IF ip daddr $GW_IP tcp dport 53 dnat to $GW_IP:1053
 		iifname $BR_IF ip daddr $GW_IP tcp dport 80 dnat to $GW_IP:8080
+		iifname $BR_IF ip daddr $GW_IP tcp dport 443 dnat to $GW_IP:8443
 	}
 
 	# Everything arriving FROM the guest net gets the folval policy.
@@ -41,6 +42,7 @@ table inet folval {
 		ip daddr $GW_IP udp dport 1053 accept comment "DNS (guest saw :53)"
 		ip daddr $GW_IP tcp dport 1053 accept comment "DNS/TCP (guest saw :53)"
 		ip daddr $GW_IP tcp dport 8080 accept comment "HTTP (guest saw :80)"
+		ip daddr $GW_IP tcp dport 8443 accept comment "TLS probe listener (guest saw :443; folval-gw -tlsprobe — ClientHello/SNI capture-only)"
 		ip daddr $GW_IP tcp dport 11234 accept comment "TCP probe listener (title analytics first-bytes capture; folval-gw -tcprobe)"
 		ip daddr $GW_IP icmp type echo-request accept comment "gate: ping GW"
 		counter drop comment "folval: default drop from guest net"

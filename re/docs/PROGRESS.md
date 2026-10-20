@@ -1,7 +1,25 @@
 # Progress — folly-n-valor
 
 **Current Phase:** Phase 4 (Frida Injection & Instrumentation)
-**Current Step:** Phase 4b implementation — game attach runs IN PROGRESS. Session-1 injection SOLVED (2026-10-18); game launches under the user-session frida-server and its D3D9 startup is fully observable. BLOCKED on the D3D9 device wall (see below) — the decisive experiment localizes the failure to the GAME's own CreateDevice parameters; bisect pending.
+**Current Step:** Phase 4b: D3D9 wall BROKEN; the game boots under full instrumentation (2026-10-19). It reaches the network layer (the in-game "Network Error!" box confirms this). Next: TLS ClientHello capture via tlsprobe (awaiting firewall apply) and the reference-server oracle run (D9).
+
+## Phase 4b — D3D9 WALL BROKEN + GAME BOOT (2026-10-19, SESSION RECORD)
+
+**The wall had four layers, all resolved this session** (full ledger: `out/EVIDENCE.md` — gitignored):
+1. **CreateDevice INVALIDCALL** → force behavior flags 0x52→0x20 (drop MULTITHREADED 0x10 + FPU_PRESERVE + HWVP; keep the game's own PP 1280×720/count=2) → **S_OK**. Isolation: 0x30 (SW-VP+MULTITHREADED) dead vs 0x20 S_OK → **MULTITHREADED alone kills CreateDevice** on this stack.
+2. **RT E_OUTOFMEMORY** → the engine's `CreateTexture(1280×720, usage=DEPTHSTENCIL, fmt=INTZ)`; native CheckDeviceFormat(depthstencil-texture) = NOTAVAILABLE (the stack has no depth-texture support) → hook swaps INTZ→A8R8G8B8 (fmt 21) + usage→RENDERTARGET (cfg `deptex`).
+3. **Texture INVALIDCALL + modal box** ("Failed to create texture 0x8876086c 32×32" — invisible "stall") → DXT1 works, ATI2/DXT5 don't → hook swaps non-DXT1 FOURCC formats to 21 (cfg `fmtswap`). 217+ textures then load, including DXT5 1920×1080 content.
+4. **Reset INVALIDCALL** (fullscreen 1024×768, then windowed; PP sanitization did not help) → **the Steam overlay (gameoverlayrenderer.dll) holds pool-DEFAULT resources across Reset** → rename the overlay DLLs in the Steam root + restart Steam → **Reset S_OK**.
+
+**Also required for direct launch:** `steam_appid.txt` = appid next to the game exe (SteamAPI_Init → 1; before that the engine silently parked in a 1Hz poll after Init → 0), plus `SteamAppId`/`SteamGameId` env vars + game-bin CWD (the reference's belt-and-braces).
+
+**Result (user-verified on VNC):** Ubisoft intro plays, distorted-but-alive rendering (expected — compressed formats swapped), in-game cursor works, the game's UI exe (CEF, ×2 procs) spawned by the engine, and the UI shows **"Network Error!"** — the game reached its network layer. The UI is the REST client: `gethostbyname` on the game's server hostname in a retry loop ~every 15–20 s, hosts-pinned to 192.168.100.1.
+
+**Capture plumbing added this session:** folval-gw gains a **`-tlsprobe`** capture-only listener (same pattern as `-tcprobe`: logs the ClientHello hex head — SNI — never responds; 512 B head) on **:8443**, with guest-side **443→8443 DNAT** added to `host/firewall/folval.nft` (unprivileged-port pattern extended; 443 bind = permission denied). **User sudo pending:** `sudo ./host/firewall/apply.sh` — when it lands, the UI's next retry connect reaches the probe and the ClientHello is captured. Then the D9 oracle run: reference server in-guest on :8443 + SSLKEYLOGFILE + hosts pin → full decrypted trace.
+
+**Working launch recipe (runs 15/16):** `FOLVAL_FRIDA_PORT=27043 FOLVAL_SCRIPT_ENV='{"gpu":{"flags":32,"deptex":21,"fmtswap":21,"reset":{"windowed":1,"interval":0,"rate":0}}}' FOLVAL_SPAWN_ENV='SteamAppId=<appid>;SteamGameId=<appid>' FOLVAL_SPAWN_CWD='<gamebin>' FOLVAL_SPAWN_ARGS='<launcher argline>' frida-run.sh --spawn '<gameexe>' gpu_shim.js,steam_probe.js` (identities in gitignored files).
+
+**dxdiag (pristine process):** healthy stack — Microsoft Basic Display Adapter, DDI 12, feature levels 12_1…9_3 (9_3 = SM3.0), 4095 MB shared. The garbage in-process D3DCAPS9 readback (canary-verified: the runtime did write it) is a d3d9-on-Basic-Display artifact, not the adapter's truth — on this stack, trust dxdiag, not in-process caps.
 
 ## Phase 4b — session-1 injection + game launch (2026-10-18, session of record)
 

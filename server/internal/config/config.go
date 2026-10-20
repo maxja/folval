@@ -11,6 +11,7 @@ type Config struct {
 	DNSAddr    string // UDP and TCP DNS listen address, e.g. "192.168.100.1:1053"
 	HTTPAddr   string // HTTP echo/logger listen address, e.g. "192.168.100.1:8080"
 	TCPProbe   string // capture-only TCP listener for first-bytes evidence ("" disables)
+	TLSProbe   string // capture-only TLS listener for ClientHello/SNI evidence ("" disables)
 	Sinkhole   string // A-record answer for every name without an override
 	Overrides  string // hosts-style override file path ("" disables)
 	Out        string // JSONL event log path ("" = stderr)
@@ -23,6 +24,7 @@ func ParseFlags() Config {
 	flag.StringVar(&cfg.DNSAddr, "dns", "192.168.100.1:1053", "DNS listen address (UDP+TCP); guest reaches it via nftables DNAT 53->1053")
 	flag.StringVar(&cfg.HTTPAddr, "http", "192.168.100.1:8080", "HTTP listen address; guest reaches it via nftables DNAT 80->8080")
 	flag.StringVar(&cfg.TCPProbe, "tcprobe", "192.168.100.1:11234", "capture-only TCP listener: logs client first bytes, never responds (title analytics port; empty string disables)")
+	flag.StringVar(&cfg.TLSProbe, "tlsprobe", "192.168.100.1:8443", "capture-only TLS listener: logs the ClientHello (SNI) the guest's TLS clients send, never responds; guest-side :443 arrives here via nftables DNAT (empty string disables)")
 	flag.StringVar(&cfg.Sinkhole, "sinkhole", "192.168.100.1", "A-record answer for names without an override")
 	flag.StringVar(&cfg.Overrides, "overrides", "", "hosts-style override file (IP name per line)")
 	flag.StringVar(&cfg.Out, "out", "", "JSONL event log path (default stderr)")

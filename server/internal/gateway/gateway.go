@@ -81,9 +81,17 @@ func Run(cfg config.Config) error {
 		}
 		defer probeLn.Close()
 	}
+	var tlsLn net.Listener
+	if cfg.TLSProbe != "" {
+		tlsLn, err = net.Listen("tcp", cfg.TLSProbe)
+		if err != nil {
+			return fmt.Errorf("gateway: tlsprobe listen: %w", err)
+		}
+		defer tlsLn.Close()
+	}
 
 	lg.Event("meta", "", "gateway.start", "",
-		fmt.Sprintf("dns=%s http=%s tcprobe=%s sinkhole=%s overrides=%d", cfg.DNSAddr, cfg.HTTPAddr, cfg.TCPProbe, cfg.Sinkhole, len(ov)))
+		fmt.Sprintf("dns=%s http=%s tcprobe=%s tlsprobe=%s sinkhole=%s overrides=%d", cfg.DNSAddr, cfg.HTTPAddr, cfg.TCPProbe, cfg.TLSProbe, cfg.Sinkhole, len(ov)))
 
 	errCh := make(chan error, 4)
 	go func() { errCh <- fmt.Errorf("gateway: dns udp: %w", dnsUDPLoop(udpConn, sinkhole, ov, lg)) }()
@@ -94,6 +102,9 @@ func Run(cfg config.Config) error {
 	}()
 	if probeLn != nil {
 		go func() { errCh <- fmt.Errorf("gateway: tcprobe: %w", tcpProbeLoop(probeLn, lg)) }()
+	}
+	if tlsLn != nil {
+		go func() { errCh <- fmt.Errorf("gateway: tlsprobe: %w", tcpProbeLoop(tlsLn, lg)) }()
 	}
 	return <-errCh
 }
@@ -230,7 +241,7 @@ func tcpProbeLoop(ln net.Listener, lg *evidence.Logger) error {
 // Probe capture bounds: total bytes per connection and per-chunk hex head.
 const (
 	probeMaxTotal = 4096
-	probeHexHead  = 256
+	probeHexHead  = 512 // large enough for a TLS ClientHello incl. SNI
 	probeIdle     = 30 * time.Second
 )
 

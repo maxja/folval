@@ -13,6 +13,13 @@
 #   bash host/tools/frida-run.sh <pid|name> <script.js> [wait_s]    # attach
 #   bash host/tools/frida-run.sh --spawn <image> <script.js> [wait_s]
 #
+# FOLVAL_SCRIPT_ENV='<json>' (optional): injected into the script source as
+# global `var FOLVAL_SCRIPT_ENV = <json>;` — per-run config WITHOUT editing
+# the probe (e.g. gpu_shim.js bisect overrides: '{"gpu":{"flags":32}}').
+#
+# <script.js> may be a COMMA-SEPARATED LIST (a,b): sources are concatenated
+# into one script — composable probes (e.g. gpu_shim.js,steam_probe.js).
+#
 # wait_s: seconds to stay attached (default 10); 0 = until Ctrl-C.
 # Attach accepts a guest PID or an exact process name (case-insensitive).
 # NB: --spawn launches under frida-server (SYSTEM, session 0) — right for
@@ -72,7 +79,13 @@ if mode == "spawn":
     if os.environ.get("FOLVAL_SPAWN_ARGS"):
         import shlex
         argv += shlex.split(os.environ["FOLVAL_SPAWN_ARGS"])
-    pid = dev.spawn(argv)
+    spawn_opts = {}
+    if os.environ.get("FOLVAL_SPAWN_ENV"):
+        spawn_opts["env"] = dict(item.split("=", 1) for item in
+                                 os.environ["FOLVAL_SPAWN_ENV"].split(";"))
+    if os.environ.get("FOLVAL_SPAWN_CWD"):
+        spawn_opts["cwd"] = os.environ["FOLVAL_SPAWN_CWD"]
+    pid = dev.spawn(argv, **spawn_opts)
     print(f"[frida-run] spawned {argv} as pid {pid}", file=sys.stderr, flush=True)
 else:
     if target.isdigit():
@@ -103,7 +116,13 @@ def on_log(level, text):
     rec("log", level=level, text=text)
 
 try:
-    script = session.create_script(open(script_path, encoding="utf-8").read())
+    src = "".join(open(p, encoding="utf-8").read() + "\n\n" for p in script_path.split(","))
+    env_cfg = os.environ.get("FOLVAL_SCRIPT_ENV")
+    if env_cfg:
+        env_cfg = json.dumps(json.loads(env_cfg))  # validate + canonical
+        src = "var FOLVAL_SCRIPT_ENV = " + env_cfg + ";\n" + src
+        print(f"[frida-run] FOLVAL_SCRIPT_ENV = {env_cfg}", file=sys.stderr, flush=True)
+    script = session.create_script(src)
     script.on("message", on_message)
     script.set_log_handler(on_log)
     script.load()
