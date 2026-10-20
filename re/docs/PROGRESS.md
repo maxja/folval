@@ -1,7 +1,7 @@
 # Progress — folly-n-valor
 
 **Current Phase:** Phase 4 (Frida Injection & Instrumentation)
-**Current Step:** Phase 4b: D3D9 wall BROKEN; the game boots under full instrumentation (2026-10-19). It reaches the network layer (the in-game "Network Error!" box confirms this). Next: TLS ClientHello capture via tlsprobe (awaiting firewall apply) and the reference-server oracle run (D9).
+**Current Step:** Phase 4b capture milestone COMPLETE (2026-10-20): game boots under full instrumentation (user-confirmed window + reconnect banner), and its backend TLS is captured — TLS 1.2, NO SNI, 16 ciphers, ALPN http/1.1, to hosts-pinned :443, ~30 s retry cadence. Overlay permanently blocked via dir-replace (host/tools/overlayoff.ps1 v3). NEXT: the D9 oracle run — reference server in-guest :8443 + gateway forward mode + SSLKEYLOGFILE → decrypted .hqs trace.
 
 ## Phase 4b — D3D9 WALL BROKEN + GAME BOOT (2026-10-19, SESSION RECORD)
 
