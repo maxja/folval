@@ -1,36 +1,27 @@
 $ProgressPreference = 'SilentlyContinue'
-# 1. stop Steam cleanly (it repairs overlay DLLs on start otherwise)
-foreach ($n in 'steam','steamwebhelper','steamservice','PublicLauncher') {
-  Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force
-}
-Start-Sleep -Seconds 2
-
-# 2. disable in-game overlay in config.vdf — survives restarts (key is
-#    "EnableInGameOverlay" under InstallConfigStore/.../Steam; most configs
-#    have it set to 1. If absent we skip -replace and rely on DLL renames.)
-$vdf = 'C:\Program Files (x86)\Steam\config\config.vdf'
-if (Test-Path $vdf) {
-  $txt = Get-Content $vdf -Raw
-  Copy-Item $vdf "$vdf.folvalbak" -Force
-  if ($txt -match '"EnableInGameOverlay"\s+"1"') {
-    $txt = $txt -replace '"EnableInGameOverlay"\s+"1"', '"EnableInGameOverlay" "0"'
-    Set-Content $vdf $txt -NoNewline
-    Write-Output 'config.vdf: EnableInGameOverlay 1 -> 0'
-  } elseif ($txt -match '"EnableInGameOverlay"') {
-    Write-Output 'config.vdf: EnableInGameOverlay already != 1'
-  } else {
-    Write-Output 'config.vdf: key absent - relying on DLL renames only'
-  }
-} else { Write-Output 'config.vdf not found' }
-
-# 3. re-rename the repaired overlay DLLs (belt+braces; .bak2 so the original
-#    folvalbak from 2026-10-19 is preserved as evidence of the first rename)
+# Block the Steam overlay PERMANENTLY: replace the DLL paths with non-empty
+# directories - Steam's core-file validation repairs missing/renamed DLLs on
+# every start (observed 2x on 2026-10-20) but cannot replace a directory
+# with a file. Overlay injection then fails silently; game boots with
+# Reset -> S_OK.
 $s = 'C:\Program Files (x86)\Steam'
-foreach ($f in 'GameOverlayRenderer.dll','gameoverlayrenderer.dll','GameOverlayRenderer64.dll','gameoverlayrenderer64.dll') {
+foreach ($f in 'GameOverlayRenderer.dll','GameOverlayRenderer64.dll') {
   $p = Join-Path $s $f
-  if (Test-Path $p) {
-    Move-Item $p "$p.folvalbak2" -Force
-    Write-Output "renamed: $f"
+  if (Test-Path $p -PathType Leaf) {
+    Move-Item $p "$p.folvalbak3" -Force
+    Write-Output "moved file: $f"
+  }
+  if (-not (Test-Path $p)) {
+    New-Item -ItemType Directory -Path $p | Out-Null
+    Set-Content (Join-Path $p 'blocked.txt') 'folval overlay block 2026-10-20'
+    Write-Output "dir-block: $f"
+  } else {
+    Write-Output "already blocked: $f"
   }
 }
-Write-Output 'overlay: config disabled + dlls renamed; restart Steam via ui-start'
+# also lowercase variants (loader may probe either case)
+foreach ($f in 'gameoverlayrenderer.dll','gameoverlayrenderer64.dll') {
+  $p = Join-Path $s $f
+  if (Test-Path $p -PathType Leaf) { Move-Item $p "$p.folvalbak3" -Force; Write-Output "moved file: $f" }
+}
+Write-Output 'overlay dir-block in place'
