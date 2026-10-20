@@ -139,12 +139,20 @@ try:
     except KeyboardInterrupt:
         pass
     session.detach()
-    if mode == "spawn":
+    # Spawned processes are killed on exit by default (probes must not
+    # outlive the run) — EXCEPT with FOLVAL_KEEP_SPAWN=1: detach without
+    # killing, for capture sessions that need the game to outlive the
+    # runner window (e.g. letting its TLS retry loop keep running while a
+    # gateway probe listens). The engine then keeps its spawn-env identity
+    # and args; re-attach later in attach mode (never kills the target).
+    if mode == "spawn" and os.environ.get("FOLVAL_KEEP_SPAWN") != "1":
         try:
             dev.kill(pid)
             print(f"[frida-run] killed spawned pid {pid}", file=sys.stderr)
         except frida.InvalidOperationError:
             pass
+    elif mode == "spawn":
+        print(f"[frida-run] FOLVAL_KEEP_SPAWN=1 — left pid {pid} running", file=sys.stderr)
     print("[frida-run] detached cleanly", file=sys.stderr)
     rec("meta", event="detach", target=target, script=script_path)
     if out_file:

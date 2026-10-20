@@ -24,6 +24,12 @@ img="$1"; shift || true
 args="$*"
 
 steam='C:\Program Files (x86)\Steam\steam.exe'
+# Bare 'steam.exe' (or any name without a path) would stage a dispatcher
+# whose `start "" steam.exe` fails at every autologon ("Windows cannot
+# find 'steam.exe'" alert — observed 2026-10-20). Auto-resolve the one
+# known bare alias; anything else must be a full backslash path.
+[[ "$img" == 'steam.exe' ]] && img="$steam"
+
 windir="${img%\\*}"   # guest dir of the target (caller passes backslash paths)
 
 # Dispatcher body (cmd). One array element per line.
