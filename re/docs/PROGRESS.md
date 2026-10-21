@@ -1,7 +1,7 @@
 # Progress — folly-n-valor
 
 **Current Phase:** Phase 4 (Frida Injection & Instrumentation)
-**Current Step:** Phase 4b capture milestone COMPLETE (2026-10-20): game boots under full instrumentation (user-confirmed window + reconnect banner), and its backend TLS is captured — TLS 1.2, NO SNI, 16 ciphers, ALPN http/1.1, to hosts-pinned :443, ~30 s retry cadence. Overlay permanently blocked via dir-replace (host/tools/overlayoff.ps1 v3). NEXT: the D9 oracle run — reference server in-guest :8443 + gateway forward mode + SSLKEYLOGFILE → decrypted .hqs trace.
+**Current Step:** D9 ORACLE MILESTONE COMPLETE (2026-10-20, session #2): reference server built from source (mingw i686 cross-build, gitignored tree) and LIVE in-guest :8443 with SSLKEYLOGFILE; gateway oracle mode (`./lab.sh gateway:oracle`) relays GW:8443 → guest:8443; full boot + connect (Reset S_OK — overlay neutralized by corrupt-after-settle in the ui-start dispatcher, `host/tools/overlaycorrupt.ps1`; the earlier dir-block v3 is NOT durable, Steam repairs it at every start); 209 relays + sustained traffic; TLS decrypt pipeline PROVEN (tshark + keylog over the host pcap ring — 347 secrets, steam noise decrypts; only steam noise seen so far). NEXT: observe the game's OWN API traffic — relaunch oracle, WATCH VNC for the login screen (hypotheses: UI needed interaction/more time, or engine owns TLS only in degraded boots), then grep ALL decrypted http POSTs in the ring. Constraint: launch MUST use the portless `-server_url` form (direct guest→GW:8443 dials are firewall-dropped; only the DNAT'd :443 path reaches the oracle).
 
 ## Phase 4b — D3D9 WALL BROKEN + GAME BOOT (2026-10-19, SESSION RECORD)
 
