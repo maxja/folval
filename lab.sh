@@ -17,6 +17,7 @@
 #   ./lab.sh vm:rebuild [--force]  packer build -> box import -> up -> verify
 #
 # Gateway (folval-gw mock gateway, server/):
+#   ./lab.sh firewall:deploy     install host/firewall/folval.nft to /etc + restart service
 #   ./lab.sh gateway:build       go build + go test (binary: server/folval-gw)
 #   ./lab.sh gateway:run         Start folval-gw in the background
 #                                (events -> logs/gateway.jsonl, pid -> logs/folval-gw.pid)
@@ -215,6 +216,15 @@ gw_start() {
 }
 
 case "${1:-}" in
+  firewall:deploy)
+    # The live ruleset is /etc/folval/folval.nft (loaded by folval-firewall
+    # at boot); the repo copy is source-of-truth but does NOT auto-apply.
+    # Editing host/firewall/folval.nft MUST be followed by this deploy or a
+    # host reboot silently reverts to the stale ruleset (2026-10-21 lesson).
+    sudo install -m 644 host/firewall/folval.nft /etc/folval/folval.nft
+    sudo systemctl restart folval-firewall
+    systemctl is-active folval-firewall
+    ;;
   vm:build)
     echo "==== folval build started $(date '+%Y-%m-%d %H:%M:%S') on $(hostname) ====" > "$BUILD_LOG"
     ts_run "$BUILD_LOG" bash packer/build.sh build

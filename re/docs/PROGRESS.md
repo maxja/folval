@@ -77,6 +77,51 @@
 
 ## Completed Milestones
 
+### D9 oracle — client TLS chase (2026-10-21, in flight)
+
+The game's network-error loop was peeled layer by layer; each fix is verified
+live before moving on:
+
+- **Hosts pin mangled** — the two pin lines were concatenated into a single
+  comment (`# folval hermetic backend pin192.168.100.1\tGameserver`), so the
+  engine resolved nothing and showed NETWORK ERROR with zero dials. Rewrote
+  the hosts entry (`attrib -r` first, literal TAB via `[char]9`), flushed DNS.
+  Result: 27 relays in the next minute; engine handshakes observed.
+- **Cert validity +7h skew** — `s_client` against our server showed
+  `verify error:num=9: certificate is not yet valid` (notBefore 7h in the
+  future: the WinRM-started server process computes X509 times from a
+  session-clock with a UTC-7 offset baked in). Engine's OpenSSL rejected the
+  cert on validity — invisible to trust-store imports and certpatch both.
+  Fix: backdate `notBefore` 7 days, `notAfter` +10y in `ISSLServer.hpp`.
+- **Stable server cert** — `CreateSSLCert` now loads `re-server-key.pem`
+  (env `FOLVAL_SERVER_PEM`) when present instead of regenerating; identity
+  survives restarts → Root store trusts it once, pcaps stay RSA-decryptable.
+- **certpatch deployed** (from the Lost Worlds `src/certshim/`): the engine
+  links libCURL+OpenSSL statically (no OpenSSL DLLs in GameData\Bin, no
+  schannel), so Windows Root imports never applied to it. Injection patches
+  the two verify functions in the decrypted `.text` (log-confirmed at
+  0157D680/0157E0E0).
+- **Analytics pin identified for free** — the engine's Bloomberg telemetry
+  dials `hqbloomberg.ubisoft.org:11234`; hosts-pin it to the gateway and the
+  existing `-tcprobe` listener (already on 11234!) captures its protocol
+  first-bytes without any new code.
+- **Remaining failure signature:** engine sends a 181B no-SNI TLS1.2
+  ClientHello, gets our 1151B ServerHello+Cert, then silently closes (no
+  Finished, no alert) → ErrorPanel. One clean patched retry is still pending
+  (injection landed 23s after the engine's only dial; it went into backoff).
+  Staged plan in the session handoff: (A) user clicks Retry on the dialog,
+  (B) engine verbose-logging switches (DebugSettings.json), (C) plain-HTTP
+  `-server_url` test bypassing TLS entirely, (D) frida trace of the abort,
+  (E) proper CA chain. Tooling restructured meanwhile: durable guest-side
+  scripts moved `tmp/*.ps1` → `vm/` (oracle-stage/restart/firewall/trust,
+  probe-connect/tls/wer) + new `host/tools/guest-push.sh` (generic
+  `/push/` transport, fixes the overlayblock naming bug);
+  `ui-start.sh` dispatcher now runs only `overlaycorrupt.ps1`.
+- **UI artefact debt:** the D3D shim renders the login UI with visible
+  artefacts (32-bit content duplicated over 64-bit screen, per user reports
+  on tmp/screen1/2/4.png — local-only evidence). Readable UI is a prerequisite
+  for the manual login click in Stage A.
+
 - Phase 0 COMPLETE (2026-10-10)
 - Phase 1 COMPLETE (2026-10-12)
 - Phase 2 COMPLETE (2026-10-14)

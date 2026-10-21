@@ -38,9 +38,9 @@ lines=('@echo off' 'rem staged by folval ui-start.sh (overlay corrupt after stea
       # into desktop-session processes (verified live); same-user instance on
       # :27043 attaches to launcher/game/UI. Idempotent via netstat guard.
       'netstat -an | find "0.0.0.0:27043" | find "LISTENING" >nul || start "" /MIN C:\frida\frida-server.exe -l 0.0.0.0:27043'
-      # overlay dir-block BEFORE Steam starts: Steam's startup validation
-      # restores the overlay DLLs (breaking Reset); block+armor first.
-      'powershell -NoProfile -ExecutionPolicy Bypass -File C:\re\overlayblock.ps1')
+      # overlay neutralization is corrupt-after-settle (below), after Steam's
+      # startup validation completes — renames/dir-blocks lose to it.
+)
 if [[ "$img" != "$steam" ]]; then
     lines+=("tasklist /FI \"IMAGENAME eq steam.exe\" | find /I \"steam.exe\" >nul || start \"\" \"$steam\""
             'timeout /t 75 /nobreak >nul')
