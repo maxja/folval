@@ -111,13 +111,33 @@ function clampRT(args, wIdx, hIdx, log) {
 }
 
 var FMT_DXT1 = 827611204; // 'DXT1' LE — works on this stack (run 12)
+var FMT_ATI2 = 843666497; // 'ATI2' 3Dc — NOTAVAILABLE (run 18, fatal at 32x32)
+var FMT_DXT5 = 894720068; // 'DXT5' — under test (4743 of 7226 textures)
 function maybeSwapFmt(log, args, fmtIdx) {
-    if (typeof CFG.fmtswap !== "number") return;
-    var f = log.fmt;
-    if (f > 200 && f !== FMT_DXT1) {
-        log.fmtWas = f;
-        args[fmtIdx] = ptr(CFG.fmtswap);
-        log.fmt = CFG.fmtswap;
+    // fmtswap semantics:
+    //   number  -> swap every FOURCC >200 except DXT1 (legacy blanket mode;
+    //              CORRUPTS content: the game writes compressed bytes into
+    //              the RGBA surface — the login-screen artefacts)
+    //   {FOURCC: fmt, ...} -> swap ONLY the listed source formats (surgical
+    //              mode; unlisted formats pass through untouched so we can
+    //              read their real driver verdict from CreateTexture hr)
+    if (typeof CFG.fmtswap === "number") {
+        var f = log.fmt;
+        if (f > 200 && f !== FMT_DXT1) {
+            log.fmtWas = f;
+            args[fmtIdx] = ptr(CFG.fmtswap);
+            log.fmt = CFG.fmtswap;
+        }
+        return;
+    }
+    if (CFG.fmtswap && typeof CFG.fmtswap === "object") {
+        var f2 = log.fmt;
+        if (Object.prototype.hasOwnProperty.call(CFG.fmtswap, "" + f2)) {
+            var to = CFG.fmtswap["" + f2];
+            log.fmtWas = f2;
+            args[fmtIdx] = ptr(to);
+            log.fmt = to;
+        }
     }
 }
 

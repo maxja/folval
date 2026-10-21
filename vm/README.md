@@ -26,6 +26,12 @@ Oracle stack (D9 reference server, cross-built from the Lost Worlds source):
   `Cert:\LocalMachine\Root` (covers schannel/CEF clients; the engine's
   static OpenSSL is covered by certpatch instead).
 
+- `uiweb80.ps1` — minimal static file server on :80 for the game's local
+  webview (lobbyPageUrl `http://localhost/gamedata/...`). Replaces the
+  engine's ConnectServer (an http.sys listener that can end up bound-but-dead
+  with orphaned request queues after engine crashes; a guest reboot clears
+  zombie registrations so this script can own :80).
+
 Probes (quick diagnostics, print a one-line verdict):
 
 - `probe-connect.ps1` — TCP reachability of the gateway 443-DNAT vs direct

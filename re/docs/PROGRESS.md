@@ -75,6 +75,53 @@
 - **Firewall:** `host/firewall/folval.nft` gains `tcp dport 11234 accept` — **user must re-apply** (`sudo ./host/firewall/apply.sh` + reinstall to `/etc/folval`) before the guest can reach the listener.
 - **Frida 17 API notes:** static `Module.findExportByName` gone (instance methods required); `Process.enumerateModules()[0]` is not the main exe (`Process.mainModule`). All probes fixed accordingly.
 
+### D9 — FIRST CLIENT↔SERVER CONVERSATION (2026-10-21 evening, session #3)
+
+**Milestone: the game completed real TLS conversations with the reference
+server** — relay closes `client→656B / server→8691B` and `1019/1447B`
+(8.7KB = session/config-sized response), followed by a visible in-game pass
+through login→intro before returning to the error screen. Full bytes are in
+the pcap ring + `sslkeys.log` for offline decryption (pipeline proven D9/1).
+
+How the wall fell — every wrong assumption corrected en route:
+
+- **The "engine TLS abort" was a misattribution.** The 181B no-SNI hellos
+  were decoded: SNI `ecs.office.com` / `wdcp.microsoft.com` — Office/Windows
+  telemetry rejecting our self-signed cert. The GAME had never dialed at
+  all (zero game DNS, zero engine TCP). The day's cert-validity fix
+  (7d-backdated notBefore for the +7h WinRM session-clock skew) and stable
+  PEM cert remain correct and necessary — they were just never the blocker.
+- **Engine requires https** — `http://` `-server_url` → clean exit at +35s
+  (mqelserver gained a PLAIN mode anyway: argv `plain`/env FOLVAL_PLAIN,
+  same RE rx hex logging, useful for future protocol replay).
+- **UI artefacts root-caused & fixed WITHOUT wrappers.** The old fmtswap
+  blanket-swapped every FOURCC>200 to RGBA, so the game wrote DXT5-packed
+  bytes into RGBA surfaces — corrupting 4743/7226 textures. Texture census:
+  DXT5 ×4743, DXT1 ×1649, ATI2 ×343, A8R8G8B8 ×459. fmtswap is now
+  format-aware (`{"843666497":21}` map form): ONLY ATI2 (3Dc) is swapped
+  (the driver returns NOTAVAILABLE 0x8876086c, fatal to the engine); DXT5
+  and DXT1 pass through natively (S_OK ×4880 verified). Visuals readable
+  (user-confirmed); minor normal-map shading quirks remain (ATI2 content).
+- **dgVoodoo2 dead end, documented**: v2.87.5 wrapper gave perfect visuals
+  but the game dies at PACKAGE_HERO (E_OUTOFMEMORY on 1024² texture →
+  "Application immediate shutdown"). Root: 32-bit process VA exhaustion —
+  exe already has the LAA bit (chars 0x0122), RAM irrelevant (16GB guest
+  failed identically; reverted to 8G). VRAM=256/4GB, FastVideoMemoryAccess
+  — no effect. Wrapper DLL parked at `C:\re\dgv-D3D9.dll.disabled`.
+- **The engine dials Gameserver:8443 directly** (SynSent seen live) — and
+  guest→GW **direct :8443 was silently dropped again** after the day's VM
+  reboots (nftables/libvirt ordering regression). The portless URL
+  `https://Gameserver` (→ :443 → DNAT → forward) is the durable path — the
+  old "portless fails to parse" verdict was from the mangled-hosts era.
+- **The engine also needs a LOCAL webserver on :80** (lobbyPageUrl
+  `http://localhost/gamedata/...`): its ConnectServer is an http.sys
+  listener that ended bound-but-dead (orphaned request queues, PID-4
+  socket). `vm/uiweb80.ps1` serves GameData on :80 as a replacement
+  (zombie http.sys registrations block rebinding until guest reboot).
+- **Pass-through sequence** (user-observed on VNC): boot → login pass →
+  short intro → back to error screen → hang. Likely a follow-up backend
+call failing (see handoff Open Questions).
+
 ## Completed Milestones
 
 ### D9 oracle — client TLS chase (2026-10-21, in flight)
