@@ -92,8 +92,10 @@ func GameserverHandler(lg *evidence.Logger, accountJSON []byte) http.Handler {
 // loaded from certPath when readable (stable identity: one Root-store /
 // certpatch arrangement, forever-decryptable pcaps); otherwise an ephemeral
 // self-signed CN=Gameserver cert is generated — enough for wire-shape runs,
-// not for trusted ones.
-func gameserverLoop(ln net.Listener, certPath, accountPath string, lg *evidence.Logger) error {
+// not for trusted ones. keylogPath (optional) enables an SSLKEYLOGFILE-
+// compatible append log: with TLS now terminating in THIS process, it is the
+// only way future pcaps of gameserver sessions stay tshark-decryptable.
+func gameserverLoop(ln net.Listener, certPath, accountPath, keylogPath string, lg *evidence.Logger) error {
 	cert, err := loadOrCreateCert(certPath)
 	if err != nil {
 		return fmt.Errorf("gateway: gameserver cert: %w", err)
@@ -106,16 +108,26 @@ func gameserverLoop(ln net.Listener, certPath, accountPath string, lg *evidence.
 		}
 		accountJSON = b
 	}
-	srv := &http.Server{
-		Handler:           GameserverHandler(lg, accountJSON),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	return srv.Serve(tls.NewListener(ln, &tls.Config{
+	tlsConf := &tls.Config{
 		Certificates: []tls.Certificate{*cert},
 		// The observed client negotiates TLS1.2 ECDHE; keep the default
 		// modern set — it also serves TLS1.3 probes without config drift.
 		MinVersion: tls.VersionTLS12,
-	}))
+	}
+	if keylogPath != "" {
+		f, err := os.OpenFile(keylogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+		if err != nil {
+			return fmt.Errorf("gateway: gameserver keylog: %w", err)
+		}
+		defer f.Close()
+		tlsConf.KeyLogWriter = f
+		lg.Event("gameserver", "", "gameserver.keylog", keylogPath, "enabled")
+	}
+	srv := &http.Server{
+		Handler:           GameserverHandler(lg, accountJSON),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return srv.Serve(tls.NewListener(ln, tlsConf))
 }
 
 // loadOrCreateCert returns the TLS certificate for the Gameserver endpoint:

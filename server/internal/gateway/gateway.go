@@ -146,7 +146,7 @@ func Run(cfg config.Config) error {
 	}
 	if gsLn != nil {
 		go func() {
-			errCh <- fmt.Errorf("gateway: gameserver: %w", gameserverLoop(gsLn, cfg.GameserverCert, cfg.GameserverAccount, lg))
+			errCh <- fmt.Errorf("gateway: gameserver: %w", gameserverLoop(gsLn, cfg.GameserverCert, cfg.GameserverAccount, cfg.GameserverKeylog, lg))
 		}()
 	}
 	return <-errCh

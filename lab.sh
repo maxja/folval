@@ -341,7 +341,8 @@ case "${1:-}" in
     #   grep '^{"Result"' tmp/decrypted/convo387.txt > tmp/account.json
     GW_CERT=tmp/re-server-key.pem
     GW_ACC=tmp/account.json
-    GW_ARGS=(-gameserver 192.168.100.1:8443)
+    GW_KEYLOG=tmp/sslkeys-gw.log
+    GW_ARGS=(-gameserver 192.168.100.1:8443 -gameserver-keylog "$GW_KEYLOG")
     [ -f "$GW_CERT" ] && GW_ARGS+=(-gameserver-cert "$GW_CERT")
     [ -f "$GW_ACC" ] && GW_ARGS+=(-gameserver-account "$GW_ACC")
     gw_start "${GW_ARGS[@]}"

@@ -16,6 +16,7 @@ type Config struct {
 	GameserverAddr    string // TLS Gameserver endpoint reimplementing the observed .hqs routes ("" disables)
 	GameserverCert    string // PEM (cert+key) for the Gameserver endpoint; stable identity keeps guest trust + pcap decryptability
 	GameserverAccount string // account-state JSON file served by GetAccountInformation (gitignored; captured from the oracle run)
+	GameserverKeylog  string // SSLKEYLOGFILE-compatible keylog for the Gameserver TLS ("" disables) — keeps the pcap-decrypt pipeline alive now that WE terminate TLS
 	Sinkhole          string // A-record answer for every name without an override
 	Overrides         string // hosts-style override file path ("" disables)
 	Out               string // JSONL event log path ("" = stderr)
@@ -33,6 +34,7 @@ func ParseFlags() Config {
 	flag.StringVar(&cfg.GameserverAddr, "gameserver", "", "TLS Gameserver endpoint, e.g. 192.168.100.1:8443 — serves the routes observed in the D9 decrypt (SendCommands, GetAccountInformation); replaces -tlsprobe/-forward when the address overlaps (empty string disables)")
 	flag.StringVar(&cfg.GameserverCert, "gameserver-cert", "", "PEM file (cert then key) for the gameserver endpoint; reuse the oracle's stable cert so guest trust and keylog decryption carry over (empty = ephemeral self-signed CN=Gameserver)")
 	flag.StringVar(&cfg.GameserverAccount, "gameserver-account", "", "JSON file served verbatim by GET /AccountInformationService.hqs/GetAccountInformation (captured account state from the oracle run; gitignored)")
+	flag.StringVar(&cfg.GameserverKeylog, "gameserver-keylog", "", "SSLKEYLOGFILE-format keylog for the gameserver TLS listener (empty string disables) — append-mode, same format tshark consumes from the oracle")
 	flag.StringVar(&cfg.Sinkhole, "sinkhole", "192.168.100.1", "A-record answer for names without an override")
 	flag.StringVar(&cfg.Overrides, "overrides", "", "hosts-style override file (IP name per line)")
 	flag.StringVar(&cfg.Out, "out", "", "JSONL event log path (default stderr)")

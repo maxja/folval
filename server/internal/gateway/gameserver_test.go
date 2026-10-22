@@ -96,7 +96,7 @@ func TestGameserverLoopTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	go gameserverLoop(ln, "", "", lg)
+	go gameserverLoop(ln, "", "", "", lg)
 
 	client := &http.Client{
 		Transport: &http.Transport{
