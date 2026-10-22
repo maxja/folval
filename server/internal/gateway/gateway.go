@@ -86,7 +86,17 @@ func Run(cfg config.Config) error {
 	if fwdErr != nil {
 		return fwdErr
 	}
-	// One listener, two modes: forwarding replaces an overlapping probe.
+	// Mode overlap on one port (8443), priority: gameserver > forward >
+	// probe. Resolved before ANY listener is created so a yielded mode never
+	// binds.
+	if cfg.GameserverAddr != "" {
+		if cfg.GameserverAddr == cfg.TLSProbe {
+			cfg.TLSProbe = ""
+		}
+		if cfg.GameserverAddr == fwd.Listen {
+			fwd.Listen = ""
+		}
+	}
 	if fwd.Listen != "" && fwd.Listen == cfg.TLSProbe {
 		cfg.TLSProbe = ""
 	}
@@ -96,6 +106,15 @@ func Run(cfg config.Config) error {
 			return fmt.Errorf("gateway: tlsprobe listen: %w", err)
 		}
 		defer tlsLn.Close()
+	}
+	// Gameserver endpoint (Phase 5) — TLS + .hqs routes; see gameserver.go.
+	var gsLn net.Listener
+	if cfg.GameserverAddr != "" {
+		gsLn, err = net.Listen("tcp", cfg.GameserverAddr)
+		if err != nil {
+			return fmt.Errorf("gateway: gameserver listen: %w", err)
+		}
+		defer gsLn.Close()
 	}
 	var fwdLn net.Listener
 	if fwd.Listen != "" {
@@ -107,9 +126,9 @@ func Run(cfg config.Config) error {
 	}
 
 	lg.Event("meta", "", "gateway.start", "",
-		fmt.Sprintf("dns=%s http=%s tcprobe=%s tlsprobe=%s forward=%s->%s sinkhole=%s overrides=%d", cfg.DNSAddr, cfg.HTTPAddr, cfg.TCPProbe, cfg.TLSProbe, fwd.Listen, fwd.Target, cfg.Sinkhole, len(ov)))
+		fmt.Sprintf("dns=%s http=%s tcprobe=%s tlsprobe=%s forward=%s->%s gameserver=%s sinkhole=%s overrides=%d", cfg.DNSAddr, cfg.HTTPAddr, cfg.TCPProbe, cfg.TLSProbe, fwd.Listen, fwd.Target, cfg.GameserverAddr, cfg.Sinkhole, len(ov)))
 
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 8)
 	go func() { errCh <- fmt.Errorf("gateway: dns udp: %w", dnsUDPLoop(udpConn, sinkhole, ov, lg)) }()
 	go func() { errCh <- fmt.Errorf("gateway: dns tcp: %w", dnsTCPLoop(tcpLn, sinkhole, ov, lg)) }()
 	go func() {
@@ -124,6 +143,11 @@ func Run(cfg config.Config) error {
 	}
 	if fwdLn != nil {
 		go func() { errCh <- fmt.Errorf("gateway: forward: %w", forwardLoop(fwdLn, fwd.Target, lg)) }()
+	}
+	if gsLn != nil {
+		go func() {
+			errCh <- fmt.Errorf("gateway: gameserver: %w", gameserverLoop(gsLn, cfg.GameserverCert, cfg.GameserverAccount, lg))
+		}()
 	}
 	return <-errCh
 }

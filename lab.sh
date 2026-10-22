@@ -24,6 +24,9 @@
 #   ./lab.sh gateway:oracle      Same, plus -forward 8443->guest:8443 (D9 oracle:
 #                                tlsprobe replaced by a TCP relay to the in-guest
 #                                reference server; pcap ring records the conversation)
+#   ./lab.sh gateway:gameserver  Phase 5: serve the observed .hqs routes ourselves
+#                                over TLS (stable PEM + captured account JSON from
+#                                tmp/ when staged; replaces the oracle forward)
 #   ./lab.sh gateway:status      Is folval-gw running?
 #   ./lab.sh gateway:stop        Stop the background folval-gw
 #
@@ -326,6 +329,22 @@ case "${1:-}" in
     # in-guest reference server (:8443), so the game's TLS gets ANSWERED
     # while the pcap ring records the full conversation on the wire.
     gw_start -forward "192.168.100.1:8443->192.168.100.10:8443"
+    ;;
+  gateway:gameserver)
+    # Phase 5: folval-gw serves the .hqs routes ITSELF over TLS (the two
+    # routes observed in the D9 decrypt) instead of relaying to the
+    # in-guest reference server. Uses the oracle's stable PEM when staged
+    # (guest-pull re-server-key.pem -> tmp/) so guest trust and keylog
+    # decryption carry over; account JSON from the captured convo
+    # (tmp/account.json). Stage once:
+    #   bash host/tools/guest-pull.sh 'C:\re\server\re-server-key.pem' tmp/re-server-key.pem
+    #   grep '^{"Result"' tmp/decrypted/convo387.txt > tmp/account.json
+    GW_CERT=tmp/re-server-key.pem
+    GW_ACC=tmp/account.json
+    GW_ARGS=(-gameserver 192.168.100.1:8443)
+    [ -f "$GW_CERT" ] && GW_ARGS+=(-gameserver-cert "$GW_CERT")
+    [ -f "$GW_ACC" ] && GW_ARGS+=(-gameserver-account "$GW_ACC")
+    gw_start "${GW_ARGS[@]}"
     ;;
   gateway:status)
     if [ -f "$GW_PID" ] && kill -0 "$(cat "$GW_PID")" 2>/dev/null; then
