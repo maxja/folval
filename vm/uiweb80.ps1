@@ -2,7 +2,9 @@ $ProgressPreference = 'SilentlyContinue'
 # Minimal static file server on :80 for the game's local webview
 # (lobbyPageUrl http://localhost/gamedata/UI/...). The engine's own
 # ConnectServer is bound-but-dead after certain boots; this replaces it.
-param([string]$Root = 'C:\Program Files (x86)\Steam\steamapps\common\The Mighty Quest For Epic Loot\GameData')
+# Root: the title's GameData dir (name elided per repo policy) — first match
+# under the default Steam library; override with -Root or FOLVAL_GAMEDATA.
+param([string]$Root = "$(if ($env:FOLVAL_GAMEDATA) { $env:FOLVAL_GAMEDATA } else { (Get-ChildItem 'C:\Program Files (x86)\Steam\steamapps\common\*\GameData' -Directory | Select-Object -First 1).FullName })")
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add('http://+:80/')
 $listener.Start()
