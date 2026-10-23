@@ -125,7 +125,22 @@ var STRLEN_CFG = (typeof FOLVAL_SCRIPT_ENV !== "undefined" && FOLVAL_SCRIPT_ENV.
     // replaces the original exception record (verified 10-22 vs 10-23:
     // strlen(0x1B) vs read@0x60, same reporter chain, different leaf).
     // Log the ORIGINAL exception before any engine handler sees it.
+    // skipav: redirect known walk-crash sites to their graceful-skip paths
+    // (found via .text dump: 0x508680's NULL-string branch is 0x5086D9).
+    // Used to boot past the registration-vs-walk race (2026-10-23).
+    var SKIP_PATHS = {
+        "0x508690": 0x5086D9   // mov ecx,[esi] fault -> skip field (empty path)
+    };
     Process.setExceptionHandler(function (d) {
+        if (d.type === "access-violation" && STRLEN_CFG.skipav) {
+            var off = "0x" + d.context.pc.sub(gameModule().base).toString(16);
+            if (SKIP_PATHS[off] !== undefined) {
+                var m = gameModule();
+                d.context.eip = m.base.add(SKIP_PATHS[off]);
+                send({ t: "strlen_trace", ev: "skipav", from: off, to: "0x" + SKIP_PATHS[off].toString(16), mem: d.memory ? "" + d.memory.address : null });
+                return true; // handled — continue at the skip path
+            }
+        }
         var m = Process.findModuleByAddress(d.context.pc);
         var payload = {
             t: "strlen_trace", ev: "exception", type: d.type,
