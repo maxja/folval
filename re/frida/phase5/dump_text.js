@@ -6,7 +6,7 @@
 // Transport: base64 chunks via send() (JSONL-safe); host reassembles.
 "use strict";
 (function () {
-    var TEXT_RVA = 0x1000, TEXT_END = 0xBBB404; // .text + .rdata
+    var TEXT_RVA = 0x1000, TEXT_END = 0x1200000; // .text + .rdata + .data + .UBX0
     var CHUNK = 0x18000; // 96KB raw -> 128KB base64 per send
 
     function gameModule() {
