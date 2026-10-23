@@ -334,14 +334,14 @@ case "${1:-}" in
     # Phase 5: folval-gw serves the .hqs routes ITSELF over TLS (the two
     # routes observed in the D9 decrypt) instead of relaying to the
     # in-guest reference server. Uses the oracle's stable PEM when staged
-    # (guest-pull re-server-key.pem -> tmp/) so guest trust and keylog
+    # (guest-pull re-server-key.pem -> tmp/gateway/) so guest trust and keylog
     # decryption carry over; account JSON from the captured convo
-    # (tmp/account.json). Stage once:
-    #   bash host/tools/guest-pull.sh 'C:\re\server\re-server-key.pem' tmp/re-server-key.pem
-    #   grep '^{"Result"' tmp/decrypted/convo387.txt > tmp/account.json
-    GW_CERT=tmp/re-server-key.pem
-    GW_ACC=tmp/account.json
-    GW_KEYLOG=tmp/sslkeys-gw.log
+    # (tmp/gateway/account.json). Stage once:
+    #   bash host/tools/guest-pull.sh 'C:\re\server\re-server-key.pem' tmp/gateway/re-server-key.pem
+    #   grep '^{"Result"' tmp/d9/decrypted/convo387.txt > tmp/gateway/account.json
+    GW_CERT=tmp/gateway/re-server-key.pem
+    GW_ACC=tmp/gateway/account.json
+    GW_KEYLOG=tmp/gateway/sslkeys-gw.log
     GW_ARGS=(-gameserver 192.168.100.1:8443 -gameserver-keylog "$GW_KEYLOG")
     [ -f "$GW_CERT" ] && GW_ARGS+=(-gameserver-cert "$GW_CERT")
     [ -f "$GW_ACC" ] && GW_ARGS+=(-gameserver-account "$GW_ACC")
