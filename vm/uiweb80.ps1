@@ -22,6 +22,10 @@ while ($listener.IsListening) {
   try {
     $ctx = $listener.GetContext()
     $path = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)
+    # The engine's lobbyPageUrl is http://localhost/gamedata/UI/... but the
+    # files live under <root>\Data\UI\... — map the /gamedata/ prefix to the
+    # Data subfolder (naive as-is mapping 404s and the CEF UI dies at +10s).
+    if ($path -like '/gamedata/*') { $path = '/Data' + $path.Substring('/gamedata'.Length) }
     $rel = $path.TrimStart('/') -replace '/', '\'
     $file = Join-Path $Root $rel
     if ((Test-Path $file -PathType Leaf) -and ((Resolve-Path $file).Path -like "$Root*")) {

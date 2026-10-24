@@ -160,6 +160,116 @@ var STRLEN_CFG = (typeof FOLVAL_SCRIPT_ENV !== "undefined" && FOLVAL_SCRIPT_ENV.
             }
         });
     }
+    // reset-eax redirect (fn 0x506D30, "reset manager"): loads settings obj
+    // into eax from [edi+0x1c50] (same slot family as walk guard), then zeroes
+    // ~20 fields through it (offsets 0x20..0x178) before walking [edi+0x1c3c]
+    // and [edi+0x1ad0]. If the slot is implausible (factory lookup returned 0
+    // in the reg loop), the stores fault (run38: write-to-0x64 @ RVA 0x506d43).
+    // Fix WITHOUT return-emulation (UBX-packed tails make the true epilogue
+    // untrustworthy — a wrong ret emulation wedged the agent in run39):
+    // hook the instruction AFTER the eax load; redirect a garbage eax to a
+    // zeroed scratch page. The function runs naturally, stores land in scratch,
+    // real epilogue executes wherever it lives.
+    // REG_FIXES: on fault at these RVAs, fix a register to a sandbox and
+    // RETRY the same instruction (bulletproof against "valid-looking garbage"
+    // that passes plausibility but points at unmapped/freed memory — run43:
+    // store chain fault at 0x506dd3 with plausible eax on a 2nd invocation).
+    // reset (fn 0x506D30) store chain: all [eax+off] stores → eax=sandbox.
+    var REG_FIXES = {
+        "0x506d43": { r: "eax" }, "0x506d4a": { r: "eax" }, "0x506d51": { r: "eax" },
+        "0x506d58": { r: "eax" }, "0x506d5f": { r: "eax" }, "0x506d66": { r: "eax" },
+        "0x506d6d": { r: "eax" }, "0x506d74": { r: "eax" }, "0x506d7b": { r: "eax" },
+        "0x506d82": { r: "eax" }, "0x506d8c": { r: "eax" }, "0x506d96": { r: "eax" },
+        "0x506da0": { r: "eax" }, "0x506da7": { r: "eax" }, "0x506dae": { r: "eax" },
+        "0x506db5": { r: "eax" }, "0x506dbc": { r: "eax" }, "0x506dc3": { r: "eax" },
+        "0x506dd3": { r: "eax" }, "0x506ddd": { r: "eax" },
+        // reset walk#1 reads: esi=[edi+0x1c3c] object / array / entries
+        "0x506def": { r: "esi" }, "0x506df5": { r: "esi" },
+        "0x506dfb": { r: "eax" }, "0x506dfe": { r: "eax" }, "0x506e07": { r: "eax" },
+        // reset walk#2: array read / vtable read / [eax] call target read
+        "0x506e36": { r: "eax" }, "0x506e3f": { r: "ecx" }
+    };
+    var fixSandbox = Memory.alloc(0x1000);      // generic zeroed target
+    var fixObj     = Memory.alloc(0x40);         // fake object: [0]=fakeVt
+    var fixVt      = Memory.alloc(0x40);         // fake vtable: [0]=ret4
+    try {
+        // find a `ret 4` (c2 04 00) gadget in kernel32 .text for the walk2
+        // vcall (push 1; call [eax] — callee must ret 4)
+        var k32m = Process.findModuleByName("kernel32.dll");
+        if (k32m) {
+            var hits = Memory.scanSync(k32m.base, Math.min(k32m.size, 0x200000), "c2 04 00");
+            if (hits.length) { fixVt.writePointer(hits[0].address); }
+        }
+    } catch (e) {}
+    fixObj.writePointer(fixVt);
+
+    var RVA_RESET_EAX = 0x506D3D; // mov [edi],0x013f3124 (tag store) — eax already loaded
+    var resetScratch = Memory.alloc(0x1000); // zeroed, RW, script-lifetime
+    var walkScratch = Memory.alloc(0x100);   // zeroed: word[+4]=0 → count 0
+    var resetPoisoned = false; // set when eax redirect proves a half-dead manager
+    function armResetGuard(base) {
+        Interceptor.attach(base.add(RVA_RESET_EAX), {
+            onEnter: function (args) {
+                try {
+                    var eax = this.context.eax;
+                    var bad = !plausibleHeap(eax);
+                    if (!bad) { try { eax.readByteArray(0x180); } catch (e) { bad = true; } } // valid-looking but unmapped
+                    if (bad) {
+                        this.context.eax = resetScratch;
+                        resetPoisoned = true;
+                        send({ t: "strlen_trace", ev: "reset_eax_redirect", was: "" + eax });
+                    } else {
+                        resetPoisoned = false; // healthy manager — walks may run
+                    }
+                } catch (e) {}
+            }
+        });
+        // walk #1 continues the fn: esi=[edi+0x1c3c] @0x506DE7, then
+        // `xor eax,eax; cmp ax,[esi+4]; jae skip`. Hook the xor (esi loaded):
+        // if the manager is poisoned, force the zeroed scratch (count 0 →
+        // jae taken) — the array holds garbage objects whose release vcalls
+        // jump wild (agent-corrupting); skipping leaks refs instead.
+        Interceptor.attach(base.add(0x506DED), {
+            onEnter: function (args) {
+                try {
+                    var esiBad = !plausibleHeap(this.context.esi);
+                    if (!esiBad) { try { this.context.esi.readByteArray(0x10); } catch (e) { esiBad = true; } }
+                    if (resetPoisoned || esiBad) {
+                        this.context.esi = walkScratch;
+                        send({ t: "strlen_trace", ev: "reset_walk1_skip", esi: "" + this.context.esi });
+                    } else if (resetPoisoned) {
+                        // plausible-looking garbage object: validate count array
+                        try {
+                            var arr = this.context.esi.add(8).readPointer();
+                            if (!plausibleHeap(arr)) {
+                                this.context.esi = walkScratch;
+                                send({ t: "strlen_trace", ev: "reset_walk1_skip", arr: "" + arr });
+                            }
+                        } catch (e) {}
+                    }
+                } catch (e) {}
+            }
+        });
+        // walk #2: `cmp [edi+0x1ac8],esi(0); jbe skip` @0x506E26 — array ptr
+        // [edi+0x1ad0] + release vcalls inside. If the manager is poisoned,
+        // zero the count → jbe skips the loop regardless of pointer looks.
+        Interceptor.attach(base.add(0x506E26), {
+            onEnter: function (args) {
+                try {
+                    if (!resetPoisoned) return;
+                    var edi = this.context.edi;
+                    var cnt = edi.add(0x1ac8).readPointer();
+                    var cntBad = false, arrBad = false;
+                    try { edi.add(0x1ad0).readPointer().readByteArray(8); } catch (e) { arrBad = true; }
+                    try { if (!cnt.isNull() && cnt.compare(0x10000) > 0) cntBad = true; } catch (e) { cntBad = true; }
+                    if (arrBad || cntBad) {
+                        edi.add(0x1ac8).writePointer(ptr(0));
+                        send({ t: "strlen_trace", ev: "reset_walk2_skip", cnt: "" + cnt });
+                    }
+                } catch (e) {}
+            }
+        });
+    }
     // walk-entry guard: if [this+0x1c50] isn't a plausible heap pointer, the
     // registration race lost for this slot — skip the whole walk (ret 4 after
     // dropping the pushed arg). 0x508440 is the walk fn (this=ecx, arg=field).
@@ -214,6 +324,12 @@ var STRLEN_CFG = (typeof FOLVAL_SCRIPT_ENV !== "undefined" && FOLVAL_SCRIPT_ENV.
     Process.setExceptionHandler(function (d) {
         if (d.type === "access-violation" && STRLEN_CFG.skipav) {
             var off = "0x" + d.context.pc.sub(gameModule().base).toString(16);
+            var rf = REG_FIXES[off];
+            if (rf) {
+                d.context[rf.r] = (rf.r === "ecx") ? fixObj : fixSandbox;
+                send({ t: "strlen_trace", ev: "regfix", at: off, reg: rf.r, mem: d.memory ? "" + d.memory.address : null });
+                return true; // retry the faulting insn with the fixed register
+            }
             var sp = SKIP_PATHS[off];
             if (sp) {
                 if (sp.skip) {
@@ -269,7 +385,7 @@ var STRLEN_CFG = (typeof FOLVAL_SCRIPT_ENV !== "undefined" && FOLVAL_SCRIPT_ENV.
         if (armed) return;
         var m = gameModule();
         if (!m) { send({ t: "strlen_trace", ev: "no_exe_module" }); return; }
-        if (STRLEN_CFG.skipav) { armWalkGuard(m.base); armPopulateGuard(m.base); }
+        if (STRLEN_CFG.skipav) { armWalkGuard(m.base); armPopulateGuard(m.base); armResetGuard(m.base); }
         try {
             Memory.scan(m.base, m.size, SIG, {
                 onMatch: function (a) {
