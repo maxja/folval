@@ -71,3 +71,10 @@ Rules that still govern every session. Historical/solved entries live in
 - **py-minidump 0.0.24:** parse() logs a scary PEB traceback but SUCCEEDS; `md.exception.exception_records` is a plain LIST; `ThreadContext` is a raw FILE offset (not `reader.read()`, which takes virtual addresses); x86 CONTEXT: Ebp=0xB4, Eip=0xB8, SegCs=0xBC, EFlags=0xC0, Esp=0xC4 — verify SegCs==0x23/SegSs==0x2B before trusting the parse.
 - **capinfos labels are version-dependent** ("Earliest/Latest" vs "First/Last packet time:"); match `/ packet time:/` generically.
 - **exiftool** (host, `sudo dnf install perl-Image-ExifTool`): instant PE/MSI/ISO metadata triage (version resources, PDB path, PE facts); `-j` for scripting; read-only policy on evidence.
+
+## 2026-10-23 (late) — frida/guest lessons
+- A SECOND frida session cannot attach to a process spawned by frida-run (agent monopolizes — `TransportError: timeout was reached`). Attach-type probes (window_enum, shot) must either compose into the spawn (IIFE scope, no `var CFG` collisions) or attach to a DIFFERENT process (steam.exe).
+- WinRM PowerShell screenshots (`CopyFromScreen`) capture only the session-0 desktop — session-1 game visuals need PrintWindow from a session-1 process, or VNC eyes.
+- Game window: title "The Mighty Quest for Epic Loot", class `Runtime v0.3`, seen by steam.exe-attached window_enum early in a run, but in-proc EnumWindows (composed shot.js) found nothing ×10 — don't assume cross-session visibility == in-proc visibility.
+- Process "killed" in runner log = harness timeout kill (normal); absence of it + dead process = game exited on its own. ExitProcess hook distinguishes (installed, but no exit events seen yet — exits may go through CRT exit() → RtlExitUserProcess instead).
+- Verify assumptions about "unhandled crash" first: run36 "died ~12s" per user's screen, but process was ALIVE 2min+ rendering headless — window death ≠ process death.
