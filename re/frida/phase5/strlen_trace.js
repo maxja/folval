@@ -281,6 +281,20 @@ var STRLEN_CFG = (typeof FOLVAL_SCRIPT_ENV !== "undefined" && FOLVAL_SCRIPT_ENV.
         } catch (e) { send({ t: "strlen_trace", ev: "scan_err", err: "" + e }); }
     }
 
+    // exit-watch: catch intentional termination (DLL hooks, CRC-safe)
+    try {
+        var ep = Process.findModuleByName("kernel32.dll").findExportByName("ExitProcess");
+        Interceptor.attach(ep, {
+            onEnter: function (args) {
+                send({ t: "strlen_trace", ev: "exit", kind: "ExitProcess", code: args[0].toInt32(),
+                       bt: Thread.backtrace(this.context, Backtracer.ACCURATE).slice(0, 8).map(function (a) {
+                           var m = Process.findModuleByAddress(a);
+                           return m ? (m.name + "+0x" + a.sub(m.base).toString(16)) : ("" + a);
+                       }) });
+            }
+        });
+    } catch (e) {}
+
     var d3d9 = Process.findModuleByName("d3d9.dll");
     var d3dExports = d3d9 ? d3d9.findExportByName("Direct3DCreate9") : null;
     if (d3dExports) {
