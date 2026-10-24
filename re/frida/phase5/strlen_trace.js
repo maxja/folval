@@ -293,7 +293,12 @@ var STRLEN_CFG = (typeof FOLVAL_SCRIPT_ENV !== "undefined" && FOLVAL_SCRIPT_ENV.
     // zeroed RWX page there and retry the faulting instruction. Garbage-pointer
     // reads then see NULL (loops terminate); scribbles land in a page nothing
     // else owns. Bounded by RESURRECT_CAP.
-    var RESURRECT_CAP = 16;
+    // 2026-10-24 Run A: the Bloomberg context-walk cleanup faulted a WRITE to
+    // [esi+0x140] at 0xF14164 — page 0xF14000 sat BELOW the old 0x1000000 floor
+    // (ASLR'd low heaps), resurrect declined, engine died at +10s. Floor lowered
+    // to 1MB (still excludes null-page junk); cap raised: the cleanup walker
+    // nulls fields across multi-page objects (offsets seen to +0x1d2c).
+    var RESURRECT_CAP = 64;
     var resurrected = {};
     var VirtualAlloc = null, GetLastError = null;
     try {
@@ -306,7 +311,7 @@ var STRLEN_CFG = (typeof FOLVAL_SCRIPT_ENV !== "undefined" && FOLVAL_SCRIPT_ENV.
     function tryResurrect(addr) {
         if (!VirtualAlloc) return false;
         var a = addr.toUInt32();
-        if (a < 0x1000000 || a >= 0x7FFE0000) return false;
+        if (a < 0x100000 || a >= 0x7FFE0000) return false;
         var page = a & ~0xFFF;
         if (resurrected[page]) return false;
         if (Object.keys(resurrected).length >= RESURRECT_CAP) return false;
