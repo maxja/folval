@@ -272,6 +272,48 @@ function patchDeviceVtable(device, tag) {
         }
     });
 
+    // FPS meter — the hot paths ONLY increment counters; an aggregate
+    // {api:"fps", present, endscene, swapPresent, windowMs} is emitted every
+    // 5s from the script's own timer (cold), never per frame.
+    // 2026-10-25 leg-A lesson: device Present(17) stays 0 for this engine —
+    // frames flow via swap chains (hooked at their own Present(3)) and/or
+    // EndScene(42); all three counters run so the real path is visible.
+    if (CFG.fps !== false) {
+        var fpsC = { present: 0, endscene: 0, swapPresent: 0 };
+        Interceptor.attach(at(17), { onEnter: function () { fpsC.present++; } });
+        Interceptor.attach(at(42), { onEnter: function () { fpsC.endscene++; } });
+        var swapChains = {}; // vtable addr -> patched (chains share one static vtable per class)
+        function patchSwapChain(sc) {
+            try {
+                var svt = sc.readPointer();
+                if (swapChains["" + svt]) return;
+                swapChains["" + svt] = true;
+                Interceptor.attach(svt.add(3 * Process.pointerSize).readPointer(), {
+                    onEnter: function () { fpsC.swapPresent++; }
+                });
+                emit({ note: "swapchain vtable patched", vtable: "" + svt });
+            } catch (e) { emit({ note: "swapchain patch fail", err: "" + e }); }
+        }
+        Interceptor.attach(at(13), { // CreateAdditionalSwapChain(pp, ppChain)
+            onLeave: function (retval) {
+                if (retval.toInt32() === 0) { try { patchSwapChain(this.out); } catch (e) {} }
+            },
+            onEnter: function (args) { this.out = args[1]; }
+        });
+        Interceptor.attach(at(14), { // GetSwapChain(i, ppChain)
+            onLeave: function (retval) {
+                if (retval.toInt32() === 0) { try { patchSwapChain(this.out); } catch (e) {} }
+            },
+            onEnter: function (args) { this.out = args[1]; }
+        });
+        var FPS_WIN = (CFG.fps && CFG.fps.windowMs) || 5000;
+        setInterval(function () {
+            emit({ api: "fps", present: fpsC.present, endscene: fpsC.endscene,
+                   swapPresent: fpsC.swapPresent, windowMs: FPS_WIN });
+            fpsC.present = 0; fpsC.endscene = 0; fpsC.swapPresent = 0;
+        }, FPS_WIN);
+    }
+
     emit({ note: "device vtable patched (hooks armed)", from: tag });
 }
 

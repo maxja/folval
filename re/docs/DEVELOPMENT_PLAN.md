@@ -12,7 +12,7 @@ An isolated, reproducible QEMU/KVM lab on this Linux host: a Windows LTSC guest 
 - All directive phases (0–5) are COMPLETE; build/deployment records: `HISTORY.md`. Working-phase status: `PROGRESS.md` (currently working Phase 5 — gateway endpoint reimplementation).
 - The lab boots with `./lab.sh vm:up` (~2.5 min); WinRM + qemu-ga scripting both live (`host/tools/guest-run.sh`, `guest-winrm.sh`); gateway modes via `./lab.sh gateway:{run,oracle,gameserver,status,stop}`.
 - The game is installed in-guest (Steam, offline mode, D5 window closed & re-verified hermetic). It runs to its network layer under the gpu_shim; its wire vocabulary to the Gameserver is decrypted and recorded (D9), and folval-gw now serves those routes itself.
-- Current frontier: the client crashes ~1.1 s into telemetry init — root-caused to `strlen((char*)0x1B)` in the Bloomberg ReportManager chain (2026-10-23); dynamic trace pending.
+- Current frontier: the new-player funnel is decoded end-to-end (login → castle buy → hero → tutorial attack); the attack flow parks on a **server-side castle-content gap** (oracle ships no Castle_* data — the client has nothing to load), and rendering crawls on WARP (~9 fps) — Phase 5b (GPU passthrough) is prioritized to fix the render side before the content side.
 - Guest clock/TZ, cert trust (certpatch), overlay neutralization, and the local :80 UI webserver are all durable solved problems — see the Engine section of `.ai-memory/misconceptions.md` (active).
 
 ## Project Definition
@@ -36,6 +36,7 @@ An isolated, reproducible QEMU/KVM lab on this Linux host: a Windows LTSC guest 
   1. Client redirect needs NO binary mod — backend endpoint is a launch argument; gateway per-host DNS overrides are a second mechanism.
   2. Client-mod ladder only where forced: Frida hooks (proven) → cert-shim DLL at launch (mandatory: engine TLS trust is compiled into the packed exe) → binary patch last resort. CEF UI is the soft target for in-game work.
   3. Public servers must define their own credentials (official backend dead — no genuine handshake to replay). **Scope guard:** non-commercial/educational license; *operating* public servers for third parties needs an explicit future decision (distinct legal exposure). Does not gate lab work.
+- **D10 — GPU acceleration: VFIO passthrough, iGPU-primary / 3090-fallback (2026-10-25, user decision).** WARP software rendering (~9 fps steady) throttles the lab; virtio-gpu/virgl/venus rejected (no Windows-guest D3D9). **Radeon 610M (0000:10:00.0, clean IOMMU group) passes to the guest as render adapter — host display stays on the 3090 untouched**; 3090 remains the escalation path if the 610M underdelivers for this 2013 D3D9 title. Guest RAM 4→6G (UMA carve). Adrenalin staged offline via `/push/`. Phase 5b in DEVELOPMENT_PLAN holds the gated step list.
 
 ## Phase status
 
@@ -44,7 +45,22 @@ Directive phases 0–5 (host env, vagrant/libvirt, network+gateway, provision+de
 Working phases (post-directive, tracked in `PROGRESS.md`):
 - **Phase 4a** — Frida injection layer — COMPLETE (2026-10-17).
 - **Phase 4b** — session-1 instrumentation + game boot — COMPLETE (2026-10-19).
-- **Phase 5 (working)** — gateway endpoint reimplementation — IN PROGRESS (gameserver routes live; telemetry-init crash root-caused; dynamic trace next, then route expansion).
+- **Phase 5 (working)** — gateway endpoint reimplementation — IN PROGRESS (gameserver routes live; new-player funnel decoded, 8/14 endpoints captured; attack flow blocked on oracle castle-content gap — see PROGRESS session 6).
+- **Phase 5b (working)** — **GPU acceleration via VFIO passthrough — PRIORITIZED (2026-10-25, user decision)**; rationale + steps below. Entered because WARP software rendering (~9 fps steady) throttles every protocol-mining run and spawned the whole VA/'NULL'-FOURCC/lifeboat workaround family.
+
+### Phase 5b — VFIO GPU passthrough (iGPU-primary; 3090 = escalation fallback)
+
+Feasibility verified 2026-10-25: host Ryzen 9 7900X, RTX 3090 at 01:00.0/.1 (clean IOMMU group 12, drives host display), **Radeon 610M iGPU at 0000:10:00.0 (1002:164e, IOMMU group 26 solo — CHOSEN: zero host-display disruption)**; bus-10 siblings (PSP 10:00.2, xHCI 10:00.3/.4, audio) stay on host. Rejected: virtio-gpu/viogpudo (2D-only), VirGL/Venus (Linux guests only), experimental virgl WDDM (no D3D9).
+
+State: domain redefined 2026-10-25 (hostdev 10:00.0 → guest slot 00:08.0, 8 vCPU host-passthrough, 6G RAM, kvm-hidden + vendor_id); awaiting host-side vfio bind (user: `/etc/modprobe.d/vfio.conf` ids=1002:164e + softdep amdgpu + dracut + reboot) and offline Adrenalin staging via `/push/` (AMD CDN rejects scripted fetch — browser step).
+
+Steps (each gated):
+1. **Host vfio bind (user-assisted, privileged):** done-flag = `lspci -nnk -s 10:00.0` → `Kernel driver in use: vfio-pci`; host display unaffected (3090).
+2. **Boot + enumeration:** domain start; guest Device Manager shows unknown VGA at the passed slot (no Code 43 expected — AMD). *Validate:* WinRM up; PCI device present in-guest.
+3. **Driver staging (offline guest):** Adrenalin (Radeon 610M / Ryzen 7000, Win10 x64, ~1GB) via gateway `/push/` → silent install (setup flags or INF+pnputil extraction). *Validate:* dxdiag → Radeon 610M, D3D9 accel enabled.
+4. **gpu_shim adapter redirection:** force game CreateDevice onto the 610M adapter index (enumerate via GetAdapterIdentifier, match 1002:164e) while desktop stays std-VGA/VNC. *Validate:* d3d9dev log shows real-GPU caps; game renders (shot.js PNG).
+5. **Re-baseline + quirk teardown:** FPS-meter run vs leg A (~9 fps WARP, 2026-10-25); then re-test WITHOUT fmtswap/valifeboat/INTZ quirks. *Validate:* ≥10× FPS lift or vsync-capped; full funnel run at interactive speed; document retired quirks.
+6. **Escalation (only if 610M underdelivers):** same rework for the 3090 (cable move + 10de:2204,1aef vfio ids + OVMF/mbr2gpt risk note).
 
 ## Cross-Phase Rules
 

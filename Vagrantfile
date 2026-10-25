@@ -31,7 +31,10 @@ Vagrant.configure("2") do |config|
     lv.uri = "qemu:///system"
     lv.driver = "kvm"
     lv.memory = 8192
-    lv.cpus = 4
+    lv.cpus = 8
+    # 2026-10-25 WARP-boost A/B: host-passthrough exposes the real 7900X to
+    # the guest (was: custom EPYC-Genoa) — WARP scales with vCPUs.
+    lv.cpu_mode = "host-passthrough"
     lv.title = "folval-win"
 
     # VNC console: vagrant-libvirt's default graphics type IS vnc (autoport on
