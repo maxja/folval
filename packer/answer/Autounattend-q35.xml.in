@@ -61,6 +61,11 @@
             </CreatePartition>
           </CreatePartitions>
           <ModifyPartitions>
+            <!-- ⚠ ModifyPartition/Order is the ACTION SEQUENCE — must be
+                 sequential 1..N, independent of PartitionID. Order 1→3
+                 (skipping 2) failed to parse with "Windows cannot parse the
+                 unattend answer file's <DiskConfiguration> setting"
+                 (2026-10-26, first v2 build attempt). -->
             <ModifyPartition wcm:action="add">
               <Order>1</Order>
               <PartitionID>1</PartitionID>
@@ -69,7 +74,7 @@
             </ModifyPartition>
             <!-- MSR (PartitionID 2) stays raw — never format -->
             <ModifyPartition wcm:action="add">
-              <Order>3</Order>
+              <Order>2</Order>
               <PartitionID>3</PartitionID>
               <Format>NTFS</Format>
               <Letter>C</Letter>
