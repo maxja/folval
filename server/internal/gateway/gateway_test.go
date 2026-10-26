@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -403,4 +404,116 @@ func TestForwardDialFailureLogged(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("no dial-failed event within deadline; got:\n%s", logBuf.String())
+}
+
+// --- SNI gate (session 12) -------------------------------------------------
+
+// clientHello builds a minimal TLS record: ClientHello with cipher list,
+// compressions and (optionally) a server_name extension carrying name.
+func clientHello(t *testing.T, name string) []byte {
+	t.Helper()
+	body := []byte{0x03, 0x01}                  // legacy_version
+	body = append(body, make([]byte, 32)...)    // random
+	body = append(body, 0)                      // session_id (empty)
+	body = append(body, 0x00, 0x02, 0x00, 0x2f) // 1 cipher: TLS_RSA_AES_128_SHA
+	body = append(body, 1, 0)                   // compressions: null
+	if name != "" {
+		host := []byte(name)
+		listLen := 1 + 2 + len(host)                                    // name_type + name_len + host
+		ext := []byte{0x00, 0x00}                                       // ext type: server_name
+		ext = append(ext, byte((listLen+2)>>8), byte((listLen+2)&0xff)) // ext len
+		ext = append(ext, byte(listLen>>8), byte(listLen&0xff))         // server_name_list len
+		ext = append(ext, 0x00, byte(len(host)>>8), byte(len(host)))    // type 0 + host len
+		ext = append(ext, host...)
+		body = append(body, byte(len(ext)>>8), byte(len(ext)&0xff))
+		body = append(body, ext...)
+	} else {
+		body = append(body, 0x00, 0x00) // empty extensions block
+	}
+	hs := append([]byte{0x01, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)
+	rec := append([]byte{0x16, 0x03, 0x01, byte(len(hs) >> 8), byte(len(hs))}, hs...)
+	return rec
+}
+
+func TestSniFromClientHello(t *testing.T) {
+	if got := sniFromClientHello(clientHello(t, "wdcpalt.microsoft.com")); got != "wdcpalt.microsoft.com" {
+		t.Errorf("SNI parse: got %q", got)
+	}
+	if got := sniFromClientHello(clientHello(t, "GAMESERVER")); got != "gameserver" {
+		t.Errorf("SNI not lowercased: got %q", got)
+	}
+	if got := sniFromClientHello(clientHello(t, "")); got != "" {
+		t.Errorf("no-SNI hello should parse empty: got %q", got)
+	}
+	if got := sniFromClientHello([]byte("not tls at all")); got != "" {
+		t.Errorf("garbage should parse empty: got %q", got)
+	}
+	if got := sniFromClientHello(clientHello(t, "a.b.com")[:9]); got != "" {
+		t.Errorf("truncated hello should parse empty: got %q", got)
+	}
+}
+
+func TestForwardSNIGateRefusesAndAllows(t *testing.T) {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	var targetHits int32
+	go func() {
+		for {
+			c, err := target.Accept()
+			if err != nil {
+				return
+			}
+			atomic.AddInt32(&targetHits, 1)
+			go func(c net.Conn) { defer c.Close(); _, _ = io.Copy(c, c) }(c)
+		}
+	}()
+
+	fwdLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fwdLn.Close()
+	var logBuf bytes.Buffer
+	lg := evidence.NewLogger(&logBuf)
+	go forwardLoop(fwdLn, target.Addr().String(), lg)
+
+	// Refused: modern noise SNI never reaches the target and gets RST/FIN fast.
+	bad, err := net.Dial("tcp", fwdLn.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bad.Write(clientHello(t, "wdcp.microsoft.com")); err != nil {
+		t.Fatal(err)
+	}
+	_ = bad.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 64)
+	if n, err := bad.Read(buf); err == nil || n > 0 {
+		t.Fatalf("refused conn should see no server data (n=%d err=%v)", n, err)
+	}
+	bad.Close()
+
+	// Allowed: no-SNI legacy hello (the game) relays and echoes.
+	game, err := net.Dial("tcp", fwdLn.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer game.Close()
+	if _, err := game.Write(clientHello(t, "")); err != nil {
+		t.Fatal(err)
+	}
+	echo := make([]byte, 16)
+	_ = game.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.ReadFull(game, echo); err != nil {
+		t.Fatalf("game-style hello not relayed: %v", err)
+	}
+
+	if !strings.Contains(logBuf.String(), `"tcp.forward-refused"`) || !strings.Contains(logBuf.String(), "sni=wdcp.microsoft.com") {
+		t.Fatalf("forward-refused event missing; got:\n%s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), `"tcp.forward-open"`) {
+		t.Fatalf("forward-open relay event missing; got:\n%s", logBuf.String())
+	}
 }

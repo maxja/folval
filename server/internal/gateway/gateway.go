@@ -8,6 +8,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -359,40 +360,206 @@ func forwardLoop(ln net.Listener, target string, lg *evidence.Logger) error {
 	}
 }
 
-// serveForward dials the target and relays bidirectionally, logging
-// open/close with per-direction byte totals. Dial failures are logged and
-// the connection closed (client sees an immediate FIN — distinct from the
-// capture-only probe, which never responds at all).
+// serveForward gates on the first ClientHello's SNI, then relays to the
+// oracle target (the in-guest reference server). Unlike the capture-only
+// probes this mode ANSWERS — the client's TLS gets a server response so the
+// handshake (and the game's protocol above it) proceeds while the host pcap
+// ring records every byte on the wire.
+//
+// SNI GATE (session 12): the sealed guest resolves EVERY name to this host
+// (DNS sinkhole), and Windows background services (WCDP wdcp/wdcpalt,
+// ecs.office, settings-win, Edge, WU, checkappexec — plus Steam) dial the
+// forward port with modern TLS1.2/1.3 ClientHellos. The ancient OpenSSL
+// oracle dies silently under those bursts (205/302 observed relayed sources
+// carried wdcp* SNIs). The game's legacy stack sends a 182-byte TLS1.0
+// ClientHello with NO SNI. Policy: relay only no-SNI (the game, and any
+// pre-SNI legacy client) or SNI "Gameserver"; RST everything else. Unparsable
+// heads are ALLOWED — the game path must never be blocked by a parser edge.
+// Refusals are logged (tcp.forward-refused) so the noise cadence stays visible.
 func serveForward(conn net.Conn, target string, lg *evidence.Logger) {
 	defer conn.Close()
 	src := conn.RemoteAddr().String()
-	up, err := net.DialTimeout("tcp", target, 5*time.Second)
-	if err != nil {
-		lg.Event("tcp", src, "tcp.forward-open", target, "dial-failed: "+err.Error())
+
+	// Dial the target concurrently with the ClientHello peek so dial-failure
+	// semantics (instant FIN to the client + event) stay identical to the
+	// pre-gate forward even for silent connections.
+	type dialResult struct {
+		up  net.Conn
+		err error
+	}
+	dialCh := make(chan dialResult, 1)
+	go func() {
+		up, err := net.DialTimeout("tcp", target, 5*time.Second)
+		if err != nil {
+			lg.Event("tcp", src, "tcp.forward-open", target, "dial-failed: "+err.Error())
+		}
+		dialCh <- dialResult{up, err}
+	}()
+
+	head, name, _ := peekClientHello(conn)
+	if name != "" && !strings.EqualFold(name, "Gameserver") {
+		lg.Event("tcp", src, "tcp.forward-refused", target, "sni="+name)
+		if d := <-dialCh; d.err == nil {
+			d.up.Close() // never relayed: release the oracle-side conn
+		}
+		if tc, ok := conn.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0) // RST on close: fail fast, no polite FIN to linger on
+		}
 		return
 	}
+
+	d := <-dialCh
+	if d.err != nil {
+		return // already logged dial-failed above
+	}
+	up := d.up
 	defer up.Close()
 	lg.Event("tcp", src, "tcp.forward-open", target, "relay")
-	cs, sc := relayLogged(conn, up, src, lg)
+	cs, sc := relayLogged(io.MultiReader(bytes.NewReader(head), conn), conn, up, src, lg)
 	lg.Event("tcp", src, "tcp.forward-close", target, fmt.Sprintf("client->server=%d server->client=%d", cs, sc))
+}
+
+// peekClientHello reads (bounded: 5s deadline, 16KB cap) until the first
+// complete TLS record is buffered, returning it plus its SNI ("" when the
+// hello carries none or cannot be parsed). The returned head must be
+// replayed into the relay — those bytes are already consumed from conn.
+func peekClientHello(conn net.Conn) (head []byte, sni string, err error) {
+	const maxHead = 16 * 1024
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+
+	buf := make([]byte, 0, 4096)
+	tmp := make([]byte, 4096)
+	for len(buf) < maxHead {
+		n, rerr := conn.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if len(buf) >= 1 && buf[0] != 0x16 {
+			// Not a TLS v3 record head (SSLv2-style or plain data): nothing
+			// to gate on — relay immediately, parser said "". This keeps the
+			// non-TLS fast path the forward historically had.
+			return buf, "", nil
+		}
+		if len(buf) >= 5 && buf[0] == 0x16 {
+			recLen := int(buf[3])<<8 | int(buf[4])
+			if recLen >= 0 && len(buf) >= 5+recLen {
+				return buf[:5+recLen], sniFromClientHello(buf[:5+recLen]), nil
+			}
+		}
+		if rerr != nil {
+			if len(buf) > 0 {
+				return buf, sniFromClientHello(buf), nil
+			}
+			return nil, "", rerr
+		}
+	}
+	return buf, sniFromClientHello(buf), nil
+}
+
+// sniFromClientHello walks the TLS record -> handshake -> extensions chain
+// with explicit bounds checks and returns the server_name (host_name) of the
+// first name_type=0 entry, lowercased. Returns "" on ANY structural doubt —
+// callers treat "" as "gate open" (game path must never be blocked).
+func sniFromClientHello(b []byte) string {
+	if len(b) < 5 || b[0] != 0x16 {
+		return ""
+	}
+	p := 5
+	if len(b) < p+4 || b[p] != 0x01 { // handshake type: ClientHello
+		return ""
+	}
+	p += 4 // handshake type(1) + length(3); legacy_version(2) + random(32) follow
+	p += 2 + 32
+	if len(b) < p+1 {
+		return ""
+	}
+	sessLen := int(b[p])
+	p++
+	if len(b) < p+sessLen {
+		return ""
+	}
+	p += sessLen
+	if len(b) < p+2 {
+		return ""
+	}
+	cipherLen := int(b[p])<<8 | int(b[p+1])
+	p += 2
+	if len(b) < p+cipherLen || cipherLen%2 != 0 {
+		return ""
+	}
+	p += cipherLen
+	if len(b) < p+1 {
+		return ""
+	}
+	compLen := int(b[p])
+	p++
+	if len(b) < p+compLen {
+		return ""
+	}
+	p += compLen
+	if len(b) < p+2 { // no extensions block at all
+		return ""
+	}
+	extTotal := int(b[p])<<8 | int(b[p+1])
+	p += 2
+	if len(b) < p+extTotal {
+		return ""
+	}
+	end := p + extTotal
+	for p+4 <= end {
+		extType := int(b[p])<<8 | int(b[p+1])
+		extLen := int(b[p+2])<<8 | int(b[p+3])
+		p += 4
+		if p+extLen > end {
+			return ""
+		}
+		if extType == 0 { // server_name
+			q := p
+			if q+2 > p+extLen {
+				return ""
+			}
+			listLen := int(b[q])<<8 | int(b[q+1])
+			q += 2
+			if q+listLen > p+extLen {
+				return ""
+			}
+			for q+3 <= p+extLen {
+				nameType := int(b[q])
+				nameLen := int(b[q+1])<<8 | int(b[q+2])
+				q += 3
+				if q+nameLen > p+extLen {
+					return ""
+				}
+				if nameType == 0 && nameLen > 0 {
+					return strings.ToLower(string(b[q : q+nameLen]))
+				}
+				q += nameLen
+			}
+		}
+		p += extLen
+	}
+	return ""
 }
 
 // relayLogged copies both directions concurrently; the first direction to
 // finish closes both sockets so the other unblocks. Returns byte totals.
-func relayLogged(client, server net.Conn, src string, lg *evidence.Logger) (cs, sc int64) {
+// client is an io.Reader: serveForward wraps the conn with a prefix reader
+// when it pre-read the ClientHello for the SNI gate.
+func relayLogged(clientRead io.Reader, clientConn net.Conn, server net.Conn, src string, lg *evidence.Logger) (cs, sc int64) {
 	type dirResult struct {
 		dir string
 		n   int64
 	}
 	res := make(chan dirResult, 2)
-	copyOne := func(from, to net.Conn, dir string) {
+	copyOne := func(from io.Reader, to net.Conn, dir string) {
 		n, _ := copyLogged(from, to, dir, src, lg)
 		res <- dirResult{dir, n}
 	}
-	go copyOne(client, server, "c2s")
-	go copyOne(server, client, "s2c")
+	go copyOne(clientRead, server, "c2s")
+	go copyOne(server, clientConn, "s2c")
 	r1 := <-res
-	client.Close()
+	clientConn.Close()
 	server.Close()
 	r2 := <-res
 	for _, r := range []dirResult{r1, r2} {
@@ -409,7 +576,7 @@ func relayLogged(client, server net.Conn, src string, lg *evidence.Logger) (cs, 
 // probeHexHead cap) as tcp.forward-data — ClientHello/SNI parity with probe
 // mode without bloating the JSONL on long relays; the pcap ring holds the
 // authoritative bytes.
-func copyLogged(from, to net.Conn, dir, src string, lg *evidence.Logger) (int64, error) {
+func copyLogged(from io.Reader, to net.Conn, dir, src string, lg *evidence.Logger) (int64, error) {
 	var total int64
 	first := true
 	buf := make([]byte, 32*1024)
