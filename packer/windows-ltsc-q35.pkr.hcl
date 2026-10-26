@@ -49,10 +49,16 @@ source "qemu" "win_ltsc_q35" {
 
   # Autounattend + virtio drivers ride the floppy (1.44 MB flat copy — driver
   # packages must stay COMPLETE; build-q35.sh prunes only pdb/md/netkvmco.exe).
+  # ⚠ The answer file MUST be named exactly "Autounattend.xml" on the floppy:
+  # setup auto-discovers it ONLY under that name at media root. First v2 build
+  # (2026-10-26) shipped it as "Autounattend-q35.xml" → setup ran interactive,
+  # never injected viostor from a:\ → "no drives found". build-q35.sh renders
+  # the q35 .in template to this generic name; only ONE build runs at a time
+  # (the two renderers would otherwise race on the same path).
   # NO qemuargs -drive anywhere: any -drive in qemuargs suppresses the
   # plugin's default -drive set (iso AND disk vanish — verified 2026-10-11).
   floppy_files = [
-    "answer/Autounattend-q35.xml",
+    "answer/Autounattend.xml",
     "virtio/",
   ]
 

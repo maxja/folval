@@ -23,7 +23,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ACTION="${1:-build}"
-ANSWER="answer/Autounattend-q35.xml"
+# Render target MUST be the generic name: Windows setup auto-discovers
+# "autounattend.xml" (exact name) at media root — a suffixed name boots the
+# installer fully interactive (no viostor injection → no drives; the 2026-10-26
+# first-build failure). Source template stays suffix-named for clarity.
+ANSWER="answer/Autounattend.xml"
 TEMPLATE="windows-ltsc-q35.pkr.hcl"
 DISK="output-q35-ltsc/win-ltsc-q35.qcow2"
 BOX="output-q35/folval-win10-ltsc-q35.box"
