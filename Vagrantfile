@@ -62,8 +62,11 @@ Vagrant.configure("2") do |config|
     # --- Disk: virtio + TRIM/SSD semantics (user requirement) ---
     lv.disk_bus = "virtio"
     # Primary-disk driver opts (vagrant-libvirt 0.11.2 disk_driver):
-    # discard=unmap exposes TRIM; io=native for the qcow2 backing file.
-    lv.disk_driver :discard => "unmap", :io => "native"
+    # discard=unmap exposes TRIM (guest sees an SSD); cache=none + io=native
+    # is the O_DIRECT fast path — libvirt rejects io=native with the box's
+    # default writeback cache ("io='native' needs either no disk cache or
+    # directsync cache mode", first-up 2026-10-26).
+    lv.disk_driver :cache => "none", :io => "native", :discard => "unmap"
 
     # --- Rescue graphics + input (until iGPU lands in Phase 3) ---
     lv.video_type = "vga"
