@@ -199,6 +199,7 @@ Rules that still govern every session. Historical/solved entries live in
 - **Evidence-jsonl shot extraction**: shot.js sends rows as `payload:{t:'shot',ev:'captured',n,w,h,title}` + `ev:'chunk',n,i,b64`; images are RAW BGRA (800×600×4), not BMP — write PNG with a zlib stdlib writer (rows prefixed \x00 filter byte); model-in-pi can't view PNGs — use protocol/D3D9 census as ground truth when image reading is unavailable.
 - `schtasks /TR` nested quoting through bash→WinRM→PowerShell→cmd mangles escaped quotes — put the command in a .cmd stub file and point /TR at the file path.
 - Watch-loop aliveness probes must be transport-robust: one failed guest-run round-trip produced a false "DIED" (empty output, `grep -c` on YES); re-verify state before concluding death.
+- **WARP rendering is UNUSABLE for this game (user verdict, session 12 end): castle fps ~1.4-9 AND missing textures — the fmtswap ATI2/INTZ/'NULL'→RGBA conversions make the game write compressed bytes into uncompressed surfaces (corruption BY DESIGN of the workaround). Real-GPU rendering is now a hard lab requirement, not a nice-to-have. → VM v2 pivot plan (see handoff).**
 
 ## 2026-10-25 (session 11) — Network-Error cascade: FIVE stacked causes, oracle murder mystery OPEN
 
