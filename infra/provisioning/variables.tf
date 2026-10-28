@@ -43,7 +43,13 @@ variable "source_img_file" {
 
 variable "pci_address" {
   type        = string
-  description = "Quadro P1000 PCI address (all functions), e.g. 0000:01:00"
+  description = "Quadro P1000 host PCI address (documentation/audit only; provisioning uses the mapping)"
+}
+
+variable "pci_mapping_name" {
+  type        = string
+  default     = "p1000"
+  description = "PVE Resource Mapping name for the P1000 (Datacenter → Resource Mappings)"
 }
 
 variable "guest_mac" {

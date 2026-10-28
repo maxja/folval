@@ -45,8 +45,9 @@ resource "proxmox_virtual_environment_vm" "folval3" {
   }
 
   hostpci {
-    device = var.pci_address
-    pcie   = true
+    device  = "hostpci0"
+    mapping = var.pci_mapping_name # PVE 9: tokens can't set raw ids — Resource Mapping required
+    pcie    = true
   }
 
   efi_disk {
