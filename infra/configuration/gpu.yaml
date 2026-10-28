@@ -1,0 +1,13 @@
+# GPU readiness probe — runs the promoted host/tools/folval2/gpu-ready.ps1
+# against the guest (win_script copies + executes it remotely).
+- name: GPU readiness (restart device until problem clears)
+  hosts: folval3
+  tasks:
+    - name: Run gpu-ready probe
+      ansible.builtin.script:
+        script: "{{ playbook_dir }}/../../host/tools/folval2/gpu-ready.ps1"
+      register: gpu
+
+    - name: Output
+      ansible.builtin.debug:
+        msg: "{{ gpu.stdout_lines }}"

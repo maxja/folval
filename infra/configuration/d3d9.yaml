@@ -1,0 +1,28 @@
+# THE GATE — d3d9probe: adapter count + CreateDevice(HAL).
+# Trigger task, wait for C:\re\d3d9-s1.txt, print it.
+- name: D3D9 gate probe
+  hosts: folval3
+  tasks:
+    - name: Trigger probe task
+      ansible.windows.win_shell: |
+        Remove-Item C:\re\d3d9-s1.txt -ErrorAction SilentlyContinue
+        schtasks /Run /TN d3d9probe
+      changed_when: false
+
+    - name: Wait for result file
+      ansible.windows.win_wait_for:
+        path: C:\re\d3d9-s1.txt
+        timeout: 120
+
+    - name: Small settle delay (probe writes after creating file)
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Fetch gate result
+      ansible.windows.win_shell: Get-Content C:\re\d3d9-s1.txt
+      register: gate
+      changed_when: false
+
+    - name: ===== GATE RESULT =====
+      ansible.builtin.debug:
+        msg: "{{ gate.stdout_lines }}"
