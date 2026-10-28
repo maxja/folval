@@ -38,14 +38,10 @@ resource "proxmox_virtual_environment_vm" "folval3" {
     pre_enrolled_keys = false
   }
 
-  disk {
-    datastore_id = var.storage_pool
-    file_id      = var.source_img_file # local:iso/folval2.qcow2
-    interface    = "virtio0"
-    size         = var.vm_disk_gb
-    ssd          = true
-    discard      = "on"
-  }
+  # OS disk: adopted out-of-band — the image was imported manually with
+  # `qm importdisk 300 local:iso/folval2.img local-lvm` because bpg's disk
+  # import requires SSH and PVE 9 has no raw-image import API. Everything
+  # else about this VM is API-managed.
 
   network_device {
     bridge      = "vmbr0"
