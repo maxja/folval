@@ -1,21 +1,3 @@
-terraform {
-  required_version = ">= 1.9.0"
-  required_providers {
-    proxmox = {
-      source  = "bpg/proxmox"
-      version = ">= 0.111.1"
-    }
-  }
-}
-
-provider "proxmox" {
-  endpoint  = var.proxmox_endpoint
-  api_token = var.proxmox_api_token
-  insecure  = var.proxmox_insecure
-  # API-only: no ssh block — the disk image is uploaded out-of-band
-  # (PVE web UI → local → ISOs → Download from URL ← brain staging :8080)
-}
-
 resource "proxmox_virtual_environment_vm" "folval3" {
   name        = var.vm_name
   node_name   = var.pve_node

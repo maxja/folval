@@ -71,3 +71,6 @@ destroy:
 
 clean:
 	rm -f $(CFG)/inventory/hosts.yaml
+
+
+
