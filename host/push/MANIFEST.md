@@ -7,7 +7,7 @@ it reproducible: file, origin, expected SHA256. Rebuild any entry before use.
 
 | File | SHA256 | Notes |
 |---|---|---|
-| `folval2.qcow2` | `54e8b9d5fc3dbe4fd36fc8f03fb79d0b4e5b839a364d8fa5650f6738e90d4211` | 20.5GiB compressed / 60GiB virtual. Full folval2 box image (Win10 LTSC 21H2, virtio stack, autologon, WinRM, PSP driver, NVIDIA 582.99 driver-store staged as oem24, qemu-ga Running/Automatic, d3d9probe tooling). Converted from `/var/lib/libvirt/images/folly-n-valor_folval2.img` after final prep boot. |
+| `folval2.img` | `54e8b9d5fc3dbe4fd36fc8f03fb79d0b4e5b839a364d8fa5650f6738e90d4211` | 20.5GiB compressed / 60GiB virtual. Full folval2 box image (Win10 LTSC 21H2, virtio stack, autologon, WinRM, PSP driver, NVIDIA 582.99 driver-store staged as oem24, qemu-ga Running/Automatic, d3d9probe tooling). Converted from `/var/lib/libvirt/images/folly-n-valor_folval2.img` after final prep boot. |
 
 ## NVIDIA Quadro P1000 driver
 

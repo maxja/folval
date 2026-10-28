@@ -37,7 +37,7 @@ variable "storage_pool" {
 
 variable "source_img_file" {
   type        = string
-  default     = "local:iso/folval2.qcow2"
+  default     = "local:iso/folval2.img"
   description = "Uploaded box image (PVE Download from URL ← brain staging)"
 }
 
