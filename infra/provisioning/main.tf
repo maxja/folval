@@ -5,7 +5,7 @@ resource "proxmox_virtual_environment_vm" "folval3" {
   description = "Managed by OpenTofu - folly-n-valor game VM (Quadro P1000 passthrough)"
 
   # Windows 10 LTSC box image: q35 + OVMF (no Secure Boot), virtio bus
-  machine      = "q35"
+  machine      = "pc-q35-11.0+pve2"
   bios         = "ovmf"
   on_boot      = true
   stop_on_destroy = true
