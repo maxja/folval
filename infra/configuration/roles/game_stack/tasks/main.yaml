@@ -1,0 +1,44 @@
+# Game stack assertions — most of this is baked into the box image; the role
+# makes it idempotent and documented. Session rules live in the tasks.
+---
+- name: "Point Gameserver at the brain LAN IP"
+  ansible.windows.win_lineinfile:
+    path: C:\Windows\System32\drivers\etc\hosts
+    regexp: 'Gameserver'
+    line: "{{ brain_ip }} Gameserver"
+    state: present
+
+- name: Assert autologon (D3D9 needs a console session — /IT tasks no-op without one)
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+    name: AutoAdminLogon
+  register: autologon
+
+- name: Fail if autologon not active
+  ansible.builtin.assert:
+    that: autologon.value | int == 1
+    fail_msg: AutoAdminLogon != 1 — console session won't exist, D3D9 probe will silently no-op
+
+- name: "Ensure d3d9probe schtask (rule: /SC ONCE /ST 00:00, cmd stub, never inline)"
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    if (-not (Test-Path C:\re\d3d9probe.exe)) { throw 'C:\re\d3d9probe.exe missing from image' }
+    Set-Content -Path C:\re\d3d9-probe1.ps1 -Encoding Ascii -Value @'
+    "adapter count / HAL probe — " + (Get-Date)
+    & C:\re\d3d9probe.exe
+    '@
+    Set-Content -Path C:\re\d3d9-run.cmd -Encoding Ascii -Value "@echo off`r`npowershell -ExecutionPolicy Bypass -File C:\re\d3d9-probe1.ps1 > C:\re\d3d9-task.log 2>&1`r`n"
+    schtasks /Create /F /TN d3d9probe /TR C:\re\d3d9-run.cmd /SC ONCE /ST 00:00 | Out-Null
+    'task-ok'
+  args:
+    creates: C:\Windows\System32\Tasks\d3d9probe
+  changed_when: false
+
+- name: Verify virtio network is the active NIC (staging + gateway path)
+  ansible.windows.win_shell: (Get-NetAdapter | Where-Object Status -eq 'Up' | Measure-Object).Count
+  register: nics
+  changed_when: false
+
+- name: Report adapters up
+  ansible.builtin.debug:
+    msg: "up NICs: {{ nics.stdout | trim }}"

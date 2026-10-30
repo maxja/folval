@@ -1,0 +1,7 @@
+# Generated / local state
+provisioning/.terraform/
+provisioning/terraform.tfstate*
+configuration/inventory/hosts.yaml
+
+# Secrets — never commit
+.env.secrets

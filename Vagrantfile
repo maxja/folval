@@ -1,71 +1,93 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
-# folval Phase 1: Windows 10 Enterprise LTSC 2021 guest on libvirt/KVM.
-# Directive parameters: 8 GB RAM, 4 vCPU, isolated 192.168.100.0/24 network
-# with host gateway 192.168.100.1 and guest 192.168.100.10.
+# folval2 — VM v2 "cleanroom": q35 + OVMF (UEFI) + GPT-native install, built
+# to receive the Raphael iGPU (Radeon 610M) via VFIO passthrough in Phase 3.
+#
+# Legacy WARP machine lives in win10pc.Vagrantfile:
+#   VAGRANT_VAGRANTFILE=win10pc.Vagrantfile vagrant <cmd>
+# NEVER run both VMs at the same time: both self-assign 192.168.100.10 on
+# re-isolated-net (v2 reuses the IP on purpose — the whole toolchain —
+# gateway forwards, hosts maps, frida scripts — targets it).
+#
+# Hardware contract (user requirements, 2026-10-26):
+#   - q35 chipset + UEFI (OVMF pflash code + dedicated VARS file)
+#   - virtio disk with discard=unmap -> guest sees an SSD, TRIM works
+#   - 8 vCPU host-passthrough (FINAL user decision: restored 8 over a 4 rec)
+#   - 12 GB RAM (the iGPU has no VRAM of its own: firmware steal + shared-GPU
+#     carve-outs come out of this pool — do not trim)
+#   - <kvm hidden state='on'> (AMD drivers refuse VMs: Error 43 mitigation)
+#   - VNC rescue console (vga) until the iGPU takes over display in Phase 3;
+#     hostdevs (GFX 10:00.0 + romfile, HDMI-audio 10:00.1, PSP 10:00.2) are
+#     attached via the virsh-define workflow (tmp/runA/domain-ovmf.xml
+#     pattern), NOT via vagrant — see in-stone rule: never re-up without
+#     re-defining the domain.
 
 Vagrant.configure("2") do |config|
-  config.vm.box = "folval/win10-ltsc-2021"
+  # Distinct machine name -> separate .vagrant state + domain
+  # folly-n-valor_folval2 (no collision with the parked legacy domain).
+  config.vm.define "folval2"
+
+  config.vm.box = "folval/win10-ltsc-q35"
   config.vm.guest = :windows
 
   config.vm.communicator = "winrm"
   config.winrm.username = "vagrant"
   config.winrm.password = "vagrant"
-  # NB: do NOT set config.winrm.timeout low — it bounds each `ready?` probe
-  # (communicator.rb: Timeout.timeout(winrm.timeout) { shell.cmd("hostname") }),
-  # and a Timeout::Error escaping a probe kills the WHOLE boot wait at
-  # ~winrm.timeout seconds regardless of boot_timeout (cost: a 61s "Timed
-  # out while waiting for the machine to boot" on 2026-10-12). Default 1800.
+  # Same WinRM-timeout trap as legacy: do NOT lower winrm.timeout; it bounds
+  # each ready? probe and a Timeout::Error kills the whole boot wait.
   config.vm.boot_timeout = 600
 
-  # Windows-on-libvirt has no native synced-folder mechanism; the Phase 5
-  # Samba share (\\192.168.100.1\re) implements the workspace contract.
   config.vm.synced_folder ".", "/vagrant", disabled: true
 
   config.vm.provider :libvirt do |lv|
-    # CRITICAL: vagrant-libvirt 0.11.2 defaults to the SESSION connection
-    # (qemu:///session) when no URI is set — and on that path CreateNetworks
-    # returns early WITHOUT creating libvirt networks, so re-isolated-net is
-    # silently skipped and domain start fails with "Network not found".
-    # The lab lives on the system connection (same as `virsh`); pin it here.
     lv.uri = "qemu:///system"
     lv.driver = "kvm"
-    lv.memory = 8192
-    lv.cpus = 8
-    # 2026-10-25 WARP-boost A/B: host-passthrough exposes the real 7900X to
-    # the guest (was: custom EPYC-Genoa) — WARP scales with vCPUs.
+
+    # --- q35 + UEFI (user requirement) ---
+    lv.machine_type = "q35"
+    lv.loader = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
+    # NB: vagrant-libvirt emits a PLAIN <nvram>PATH</nvram> (no template
+    # support), so this file must pre-exist — `lab.sh vm:up2` seeds it (a
+    # writable copy of OVMF_VARS) into libvirt's nvram dir exactly once.
+    lv.nvram = "/var/lib/libvirt/qemu/nvram/folval2_VARS.fd"
+
+    # --- CPU/RAM (final: 8 vCPU per user, 12 GB for iGPU UMA carve) ---
     lv.cpu_mode = "host-passthrough"
-    lv.title = "folval-win"
+    lv.cpus = 8
+    lv.memory = 12288
 
-    # VNC console: vagrant-libvirt's default graphics type IS vnc (autoport on
-    # 127.0.0.1) — no config needed. To view the desktop:
-    #   virt-viewer folval-win        # or
-    #   virsh vncdisplay folval-win   # shows the port, e.g. :1 -> 5901
+    # --- Hide the hypervisor bit from the guest (Error 43) ---
+    lv.kvm_hidden = true
 
-    # The default libvirt management network is NAT'd to the internet.
-    # Attaching it would silently defeat guest isolation — never enable.
+    # --- Disk: virtio + TRIM/SSD semantics (user requirement) ---
+    lv.disk_bus = "virtio"
+    # Primary-disk driver opts (vagrant-libvirt 0.11.2 disk_driver):
+    # discard=unmap exposes TRIM (guest sees an SSD); cache=none + io=native
+    # is the O_DIRECT fast path — libvirt rejects io=native with the box's
+    # default writeback cache ("io='native' needs either no disk cache or
+    # directsync cache mode", first-up 2026-10-26).
+    lv.disk_driver :cache => "none", :io => "native", :discard => "unmap"
+
+    # --- Rescue graphics + input (until iGPU lands in Phase 3) ---
+    lv.video_type = "vga"
+    lv.video_vram = 262144
+    lv.inputs = [{ type: "tablet", bus: "usb" }]
+    # q35 pairs with xHCI (legacy i440fx used piix3-uhci).
+    lv.usbctl_dev = { model: "qemu-xhci", ports: "8" }
+
+    # Guest clock follows host localtime (permanent session-12 fix).
+    lv.clock_offset = "localtime"
+
+    lv.title = "folval-win2"
+
+    # Isolation + agent (same contract as legacy; see win10pc.Vagrantfile
+    # for the qemu:///system and mgmt_attach rationale).
     lv.mgmt_attach = false
     lv.qemu_use_agent = true
-
-    # Absolute-pointer input for VNC: a usb-tablet keeps host and guest
-    # cursors locked together (no relative-motion drift). Without it the
-    # domain only gets a ps/2 mouse and every VNC click fights the cursor.
-    lv.inputs = [{ type: 'tablet', bus: 'usb' }]
-
-    # Bumped from the cirrus/16MB default (Phase 4b, 2026-10-18): the game's
-    # D3D9 device creation needed VRAM headroom. Plugin options are
-    # lv.video_type / lv.video_vram (v0.11.2) — there is no lv.video_adapter.
-    # libvirt video model names: 'vga'/'qxl'/'virtio'/'cirrus' ('std' rejected).
-    lv.video_type = 'vga'
-    lv.video_vram = 262144
   end
 
-  # Phase 3 provisioning does NOT use a vagrant shell provisioner: uploads
-  # go through winrm-fs, which is a stub gem on this host (see misconceptions).
-  # `./lab.sh provision` delivers vm/debloat.ps1 via qemu-ga guest-exec
-  # (PowerShell -EncodedCommand) instead.
-
-  # Isolated lab network: no DHCP, no forwarding/NAT, host side is 192.168.100.1.
+  # Isolated lab network: no DHCP, no forwarding/NAT, host side 192.168.100.1.
+  # Same IP as the parked legacy VM — run ONE VM at a time.
   config.vm.network "private_network",
     ip: "192.168.100.10",
     libvirt__network_name: "re-isolated-net",
@@ -73,7 +95,5 @@ Vagrant.configure("2") do |config|
     libvirt__netmask: "255.255.255.0",
     libvirt__dhcp_enabled: false,
     libvirt__forward_mode: "none",
-    # Survive host reboots: the network autostarts with libvirtd, so
-    # `vagrant verify` (WinRM) works even before `vagrant up`.
     libvirt__autostart: true
 end

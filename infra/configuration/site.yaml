@@ -1,0 +1,7 @@
+- name: folly-n-valor game VM — guest configuration
+  hosts: folval3
+  gather_facts: true
+  roles:
+    - nvidia_driver
+    - game_stack
+    - frida

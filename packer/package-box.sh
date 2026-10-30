@@ -5,12 +5,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-DISK="output-win-ltsc/win-ltsc.qcow2"
-BOX="output/folval-win10-ltsc-2021.box"
+# Overridable for sibling templates (build-q35.sh sets both; defaults = legacy):
+#   PACKAGE_DISK=output-q35-ltsc/win-ltsc-q35.qcow2 PACKAGE_BOX=output-q35/folval-win10-ltsc-q35.box ./package-box.sh
+DISK="${PACKAGE_DISK:-output-win-ltsc/win-ltsc.qcow2}"
+BOX="${PACKAGE_BOX:-output/folval-win10-ltsc-2021.box}"
 
 [[ -f "$DISK" ]] || { echo "ERROR: $DISK not found — run the build first." >&2; exit 1; }
 
-mkdir -p output
+mkdir -p "$(dirname "$BOX")"
 rm -rf output/pkg
 mkdir output/pkg
 cp "$DISK" output/pkg/box.img

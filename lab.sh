@@ -16,6 +16,17 @@
 #                                this host), after a pre-debloat snapshot
 #   ./lab.sh vm:rebuild [--force]  packer build -> box import -> up -> verify
 #
+# VM v2 — folval2 cleanroom (q35 + OVMF; default Vagrantfile; legacy pinned
+# to win10pc.Vagrantfile automatically). NEVER run v1+v2 simultaneously:
+# both self-assign 192.168.100.10.
+#   ./lab.sh vm:build2           Packer q35/UEFI build (logs/build2.log)
+#   ./lab.sh vm:add2             Import folval/win10-ltsc-q35 box
+#   ./lab.sh vm:up2              Seeds OVMF VARS (once) + checks legacy is
+#                                off + vagrant up (domain folly-n-valor_folval2)
+#   ./lab.sh vm:verify2          Phase-2 gate: domain up + WinRM round-trip
+#   ./lab.sh vm:license2         slmgr /dli on folval2
+#   ./lab.sh vm:down2 / vm:destroy2  halt / destroy folval2
+#
 # Gateway (folval-gw mock gateway, server/):
 #   ./lab.sh firewall:deploy     install host/firewall/folval.nft to /etc + restart service
 #   ./lab.sh gateway:build       go build + go test (binary: server/folval-gw)
@@ -82,6 +93,17 @@ BOX_FILE="packer/output/folval-win10-ltsc-2021.box"
 BUILD_LOG="logs/build.log"
 DOMAIN="folly-n-valor_default"
 VIRSH="virsh -c qemu:///system"
+
+# Legacy WARP machine: Vagrantfile was renamed 2026-10-26. Every legacy
+# vagrant call below is pinned with VAGRANT_VAGRANTFILE; the DEFAULT
+# Vagrantfile is now the v2 cleanroom (folval2, q35 + OVMF).
+VGF_LEGACY="win10pc.Vagrantfile"
+# v2 (folval2) — see Vagrantfile + packer/windows-ltsc-q35.pkr.hcl
+BOX2_NAME="folval/win10-ltsc-q35"
+BOX2_FILE="packer/output-q35/folval-win10-ltsc-q35.box"
+DOMAIN2="folly-n-valor_folval2"
+NVRAM2="/var/lib/libvirt/qemu/nvram/folval2_VARS.fd"
+OVMF_VARS="/usr/share/edk2/ovmf/OVMF_VARS.fd"
 
 GW_BIN="server/folval-gw"
 GW_PID="logs/folval-gw.pid"
@@ -241,13 +263,13 @@ case "${1:-}" in
     ;;
   vm:up)
     echo "==== folval up started $(date '+%Y-%m-%d %H:%M:%S') on $(hostname) ====" > logs/up.log
-    ts_run logs/up.log vagrant up
+    ts_run logs/up.log env VAGRANT_VAGRANTFILE="$VGF_LEGACY" vagrant up
     ;;
   vm:verify)
     echo "== libvirt domains =="
     virsh -c qemu+unix:///system list --all | grep -E "Name|folly" || true
     echo "== WinRM round-trip =="
-    if vagrant winrm -c "echo ok"; then
+    if VAGRANT_VAGRANTFILE="$VGF_LEGACY" vagrant winrm -c "echo ok"; then
       echo "GATE: Phase 1 verification PASSED"
     else
       echo "GATE: Phase 1 verification FAILED" >&2
@@ -267,7 +289,7 @@ case "${1:-}" in
   vm:license)
     # NB: vagrant winrm -c runs via PowerShell — %windir% is NOT expanded
     # there (it arrived as a literal Documents-relative path once).
-    vagrant winrm -c "cscript //nologo C:\\Windows\\System32\\slmgr.vbs /dli"
+    VAGRANT_VAGRANTFILE="$VGF_LEGACY" vagrant winrm -c "cscript //nologo C:\\Windows\\System32\\slmgr.vbs /dli"
     ;;
   vm:snapshot)
     name="${2:-folval-$(date '+%Y%m%d-%H%M%S')}"
@@ -312,9 +334,59 @@ case "${1:-}" in
     fi
     ;;
   vm:down)
-    vagrant halt
+    VAGRANT_VAGRANTFILE="$VGF_LEGACY" vagrant halt
     ;;
   vm:destroy)
+    VAGRANT_VAGRANTFILE="$VGF_LEGACY" vagrant destroy
+    ;;
+  vm:build2)
+    echo "==== folval2 build started $(date '+%Y-%m-%d %H:%M:%S') on $(hostname) ====" > logs/build2.log
+    ts_run logs/build2.log bash packer/build-q35.sh build
+    ;;
+  vm:add2)
+    if [ ! -f "$BOX2_FILE" ]; then
+      echo "No box at $BOX2_FILE — run './lab.sh vm:build2' first." >&2
+      exit 1
+    fi
+    vagrant box add --force "$BOX2_NAME" "$BOX2_FILE"
+    ;;
+  vm:up2)
+    # v2 uses the DEFAULT Vagrantfile (folval2, machine 'folval2').
+    # PRE-CHECK 1: the OVMF VARS file must pre-exist — vagrant-libvirt emits
+    # a plain <nvram>PATH</nvram> with no template support (domain.xml.erb).
+    # Seeded into libvirt's own nvram dir (same SELinux context as the legacy
+    # domain's VARS file; qemu needs a writable copy).
+    if [ ! -f "$NVRAM2" ]; then
+      echo "== seeding $NVRAM2 from $OVMF_VARS (one-time) =="
+      sudo install -m 600 "$OVMF_VARS" "$NVRAM2"
+    fi
+    # PRE-CHECK 2: both VMs self-assign 192.168.100.10 — legacy must be off.
+    if [ "$(virsh -c qemu:///system domstate "$DOMAIN" 2>/dev/null || echo "shut off")" != "shut off" ]; then
+      echo "ERROR: legacy VM ($DOMAIN) is not shut off — both machines use" >&2
+      echo "192.168.100.10. Run './lab.sh vm:down' (or virsh shutdown) first." >&2
+      exit 1
+    fi
+    echo "==== folval2 up started $(date '+%Y-%m-%d %H:%M:%S') on $(hostname) ====" > logs/up2.log
+    ts_run logs/up2.log vagrant up
+    ;;
+  vm:verify2)
+    echo "== libvirt domains =="
+    virsh -c qemu+unix:///system list --all | grep -E "Name|folval2" || true
+    echo "== WinRM round-trip =="
+    if vagrant winrm -c "echo ok"; then
+      echo "GATE: folval2 Phase-2 verification PASSED"
+    else
+      echo "GATE: folval2 Phase-2 verification FAILED" >&2
+      exit 1
+    fi
+    ;;
+  vm:license2)
+    vagrant winrm -c "cscript //nologo C:\\Windows\\System32\\slmgr.vbs /dli"
+    ;;
+  vm:down2)
+    vagrant halt
+    ;;
+  vm:destroy2)
     vagrant destroy
     ;;
   gateway:build)

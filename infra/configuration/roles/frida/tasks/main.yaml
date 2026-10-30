@@ -1,0 +1,45 @@
+# Frida server on the guest, reachable from the brain: frida -H <guest-ip> -p ...
+# The image carries frida-server 17.24.1 (host/push/MANIFEST.md). Ensures it
+# autostarts at logon listening on all interfaces, port 27043.
+---
+- name: Locate frida-server in the image
+  ansible.windows.win_shell: |
+    $c = Get-ChildItem C:\re -Recurse -Filter 'frida-server*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($c) { $c.FullName } else { 'MISSING' }
+  register: frida_bin
+  changed_when: false
+
+- name: Assert frida-server present
+  ansible.builtin.assert:
+    that: "'MISSING' not in frida_bin.stdout"
+    fail_msg: >-
+      frida-server not found in C:\re — stage from brain
+      http://{{ brain_ip }}:8080/push/frida-server-17.24.1-windows-x86_64.exe
+
+- name: Ensure frida autostart task (stub cmd, /SC ONCE /ST 00:00)
+  ansible.windows.win_shell: |
+    $stub = 'C:\re\frida-run.cmd'
+    Set-Content -Path $stub -Encoding Ascii -Value "@echo off`r`nstart /min `"`" `"{{ frida_bin.stdout | trim }}`" -l 0.0.0.0:27043`r`n"
+    schtasks /Create /F /TN frida-server /TR $stub /SC ONCE /ST 00:00 | Out-Null
+    'task-ok'
+  args:
+    creates: C:\Windows\System32\Tasks\frida-server
+
+- name: Check frida port listening
+  ansible.windows.win_shell: (Get-NetTCPConnection -LocalPort 27043 -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count
+  register: frida_port
+  changed_when: false
+
+- name: Start frida now if not listening
+  ansible.windows.win_shell: schtasks /Run /TN frida-server; Start-Sleep 4
+  when: frida_port.stdout | trim | int == 0
+
+- name: Report frida listener
+  ansible.windows.win_shell: (Get-NetTCPConnection -LocalPort 27043 -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count
+  register: frida_final
+  changed_when: false
+
+- name: Assert frida listening on 27043
+  ansible.builtin.assert:
+    that: frida_final.stdout | trim | int > 0
+    fail_msg: frida-server not listening on 27043 after task run

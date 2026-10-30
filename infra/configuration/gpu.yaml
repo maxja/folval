@@ -1,0 +1,22 @@
+# GPU readiness — after the nvidia_driver role asserts binding, this verifies
+# the P1000 has no problem code and the driver service is running.
+- name: GPU readiness (P1000 healthy, no Code 43)
+  hosts: folval3
+  tasks:
+    - name: Query P1000 device state
+      ansible.windows.win_shell: >
+        $d = Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'PCI*VEN_10DE*' };
+        "{0}|{1}|{2}" -f $d.Name, $d.Status,
+        (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode').Data
+      register: p1000
+      changed_when: false
+
+    - name: Report P1000 state
+      ansible.builtin.debug:
+        msg: "P1000: {{ p1000.stdout | trim }}"
+
+    - name: Assert P1000 bound and healthy
+      ansible.builtin.assert:
+        that: "'Quadro P1000|OK|0' in (p1000.stdout | trim)"
+        fail_msg: "P1000 not healthy: {{ p1000.stdout | trim }}"
+        success_msg: "P1000 healthy — proceeding to d3d9 gate"

@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- folval2 (VM v2) unattended install: Windows 10 Enterprise LTSC 2021
+     (WIM Index 1, non-N, EditionID EnterpriseS). Target: QEMU/KVM q35 +
+     OVMF (UEFI), NATIVE GPT disk layout — no MBR->GPT conversion dance
+     (the legacy box needed gpt-convert.ps1 live; v2 installs GPT from the
+     start). virtio storage + network. Drivers are pulled from the attached
+     virtio-win ISO; both D: and E: roots listed (optical letter not
+     deterministic). The license key token __FOLVAL_WIN_KEY__ is rendered at
+     build time by packer/build-q35.sh into windowsPE UserData/ProductKey
+     (required: keyless installs on this media fail). WillShowUI=OnError =
+     manual VNC fallback.
+     GPT partition map: 1 EFI 100MB FAT32 (System), 2 MSR 16MB (raw),
+     3 Windows NTFS C: (rest). -->
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>en-US</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+
+    <!-- viostor must be visible to WinPE before partitioning (virtio disk).
+         packer floppy_files copies FLATLY — every file lands at the floppy
+         root, so the driver path is a:\ itself. Packages must be complete
+         (netkvm.inf requires netkvmp.exe — build-q35.sh prunes only
+         pdb/md/netkvmco.exe). -->
+    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DriverPaths>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="1">
+          <Path>a:\</Path>
+        </PathAndCredentials>
+      </DriverPaths>
+    </component>
+
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DiskConfiguration>
+        <Disk wcm:action="add">
+          <DiskID>0</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <!-- UEFI/GPT: ESP, MSR, then Windows -->
+            <CreatePartition wcm:action="add">
+              <Order>1</Order>
+              <Type>EFI</Type>
+              <Size>100</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>2</Order>
+              <Type>MSR</Type>
+              <Size>16</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>3</Order>
+              <Type>Primary</Type>
+              <Extend>true</Extend>
+            </CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <!-- ⚠ ModifyPartition/Order is the ACTION SEQUENCE — must be
+                 sequential 1..N, independent of PartitionID. Order 1→3
+                 (skipping 2) failed to parse with "Windows cannot parse the
+                 unattend answer file's <DiskConfiguration> setting"
+                 (2026-10-26, first v2 build attempt). -->
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Format>FAT32</Format>
+              <Label>System</Label>
+            </ModifyPartition>
+            <!-- MSR (PartitionID 2) stays raw — never format -->
+            <ModifyPartition wcm:action="add">
+              <Order>2</Order>
+              <PartitionID>3</PartitionID>
+              <Format>NTFS</Format>
+              <Letter>C</Letter>
+              <Label>Windows</Label>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+      <ImageInstall>
+        <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/NAME</Key>
+              <Value>Windows 10 Enterprise LTSC 2021</Value>
+            </MetaData>
+          </InstallFrom>
+          <InstallTo>
+            <DiskID>0</DiskID>
+            <PartitionID>3</PartitionID>
+          </InstallTo>
+        </OSImage>
+      </ImageInstall>
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <ProductKey>
+          <Key>__FOLVAL_WIN_KEY__</Key>
+          <WillShowUI>OnError</WillShowUI>
+        </ProductKey>
+      </UserData>
+    </component>
+  </settings>
+
+  <!-- persist virtio drivers (NetKVM, vioserial) into the installed OS -->
+  <settings pass="offlineServicing">
+    <component name="Microsoft-Windows-PnpCustomizationsNonWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DriverPaths>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="1">
+          <Path>a:\</Path>
+        </PathAndCredentials>
+      </DriverPaths>
+    </component>
+  </settings>
+
+  <settings pass="specialize">
+    <!-- Deliberately minimal: ProductKey (rejected — setup error) and TimeZone
+         (unneeded) are absent. License is applied by setup from windowsPE
+         ProductKey; activation state checked post-install (slmgr /dli). -->
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!-- Distinct hostname: keeps ARP/DNS/registry archaeology unambiguous
+           while the legacy folval-win box is parked. -->
+      <ComputerName>folval-win2</ComputerName>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!-- OOBE settings MUST exist in the 19041 unattend schema: an unknown
+           element hard-fails the oobeSystem pass parse. Mirrors the proven
+           legacy set (session 2026-10-11/12). -->
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>vagrant</Name>
+            <DisplayName>vagrant</DisplayName>
+            <Group>Administrators</Group>
+            <Password>
+              <Value>vagrant</Value>
+              <PlainText>true</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+        <AdministratorPassword>
+          <Value>vagrant</Value>
+          <PlainText>true</PlainText>
+        </AdministratorPassword>
+      </UserAccounts>
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <LogonCount>3</LogonCount>
+        <Username>vagrant</Username>
+        <Password>
+          <Value>vagrant</Value>
+          <PlainText>true</PlainText>
+        </Password>
+      </AutoLogon>
+      <FirstLogonCommands>
+        <!-- Order matters and failures are SILENT (logon continues):
+             identical proven sequence as the legacy box (winrm -> settle ->
+             Private profile -> AllowUnencrypted/Basic -> token policy ->
+             firewall -> high-performance plan). -->
+        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <CommandLine>winrm quickconfig -q</CommandLine>
+          <Description>Enable WinRM service</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <CommandLine>timeout /t 15 /nobreak</CommandLine>
+          <Description>Let adapters and WinRM service settle</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <CommandLine>powershell -Command "Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private"</CommandLine>
+          <Description>Unidentified network to Private (winrm set prerequisite)</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <CommandLine>winrm set winrm/config/service @{AllowUnencrypted=&quot;true&quot;}</CommandLine>
+          <Description>Allow unencrypted WinRM (Packer communicator)</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>5</Order>
+          <CommandLine>winrm set winrm/config/service/auth @{Basic=&quot;true&quot;}</CommandLine>
+          <Description>Enable WinRM basic auth (Packer communicator)</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>6</Order>
+          <CommandLine>reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\system /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f</CommandLine>
+          <Description>Allow elevated admin token over WinRM</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>7</Order>
+          <CommandLine>netsh advfirewall firewall add rule name=&quot;WinRM-HTTP&quot; dir=in localport=5985 protocol=TCP action=allow</CommandLine>
+          <Description>Open WinRM port 5985</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>8</Order>
+          <CommandLine>powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c</CommandLine>
+          <Description>High performance power plan for headless build</Description>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>

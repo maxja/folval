@@ -1,0 +1,39 @@
+# Assert the NVIDIA Quadro P1000 driver stack.
+# The driver is PRE-STAGED in the box image's driver store
+# (nvacwi.inf = oem24, staged from 582.99 DCH in Phase A), so on first
+# Proxmox boot Windows PnP auto-binds DEV_1CB1. This role verifies that
+# happened — it does not download or install anything.
+---
+- name: List driver store for NVIDIA display packages
+  ansible.windows.win_shell: pnputil /enum-drivers | Select-String -Pattern 'nv_diswi|nvacwi'
+  register: drvstore
+  changed_when: false
+
+- name: Assert NVIDIA display driver is in the store
+  ansible.builtin.assert:
+    that: drvstore.stdout_lines | length > 0
+    fail_msg: >-
+      nvacwi/nv_diswi missing from driver store — re-stage from
+      C:\re\nvidia\full\Display.Driver (see host/push/MANIFEST.md)
+
+- name: Query P1000 device state
+  ansible.windows.win_shell: |
+    $d = Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'PCI\VEN_10DE&DEV_1CB1*' } | Select-Object -First 1
+    if (-not $d) { 'ABSENT' } else {
+      $prob = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode').Data
+      '{0}|{1}|{2}' -f $d.Name, $d.Status, $prob
+    }
+  register: p1000
+  changed_when: false
+
+- name: Report P1000 state
+  ansible.builtin.debug:
+    msg: "P1000: {{ p1000.stdout | trim }}"
+
+- name: Assert P1000 bound and healthy (no Code 43 — Quadro is certified, it just works)
+  ansible.builtin.assert:
+    that: "'OK|0' in p1000.stdout"
+    fail_msg: >-
+      P1000 not healthy: {{ p1000.stdout | trim }}.
+      Check vfio binding on the node and the dummy plug (mini-DP) — the
+      display sink must be present for D3D9 desktop attachment.
